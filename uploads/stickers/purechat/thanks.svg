@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Thank you sticker">
+  <rect width="256" height="256" rx="56" fill="#ffffff"/>
+  <path d="M128 38l22 45 50 7-36 35 8 50-44-24-44 24 8-50-36-35 50-7 22-45z" fill="#f4c95d"/>
+  <circle cx="128" cy="128" r="56" fill="#0f8f63" opacity=".95"/>
+  <path d="M99 132l19 18 40-45" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="128" y="222" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#06333a">Thank you</text>
+</svg>

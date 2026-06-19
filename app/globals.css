@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 194 82% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 194 82% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 194 82% 13%;
+    --primary: 157 72% 31%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 46 44% 93%;
+    --secondary-foreground: 194 82% 13%;
+    --muted: 160 18% 95%;
+    --muted-foreground: 195 15% 39%;
+    --accent: 43 82% 57%;
+    --accent-foreground: 194 82% 13%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 157 72% 31%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 196 77% 8%;
+    --foreground: 210 40% 98%;
+    --card: 195 66% 10%;
+    --card-foreground: 210 40% 98%;
+    --popover: 195 66% 10%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 157 69% 46%;
+    --primary-foreground: 196 77% 8%;
+    --secondary: 196 40% 16%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 43 82% 57%;
+    --accent-foreground: 196 77% 8%;
+    --destructive: 0 62.8% 45%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 172 61% 45%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.22);
+  }
+
+  button,
+  a,
+  input,
+  textarea {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
