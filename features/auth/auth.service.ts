@@ -10,6 +10,7 @@ import {
 import { createOtpChallenge, normalizeIdentifier, verifyOtpChallenge } from "./otp.service";
 import { loginSchema, otpStartSchema, otpVerifySchema, registerSchema } from "./auth.validators";
 import { writeAuditLog } from "@/server/security/audit";
+import { cacheDel, cacheGet, cacheSetEx } from "@/server/redis/client";
 
 const accessSessionKey = (token: string) => `auth:access:${hashToken(token)}`;
 
@@ -252,9 +253,7 @@ export async function createSession(userId: string, meta: RequestMeta) {
     }
   });
 
-  await import("@/server/redis/client").then(({ redis }) =>
-    redis.setex(accessSessionKey(accessToken), accessTokenMaxAgeSeconds, session.id)
-  );
+  await cacheSetEx(accessSessionKey(accessToken), accessTokenMaxAgeSeconds, session.id);
 
   await writeAuditLog({
     actorId: userId,
@@ -277,8 +276,7 @@ export async function createSession(userId: string, meta: RequestMeta) {
 export async function getSessionFromAccessToken(accessToken?: string) {
   if (!accessToken) return null;
 
-  const { redis } = await import("@/server/redis/client");
-  const sessionId = await redis.get(accessSessionKey(accessToken));
+  const sessionId = await cacheGet(accessSessionKey(accessToken));
 
   if (!sessionId) return null;
 
@@ -341,9 +339,7 @@ export async function rotateRefreshToken(refreshToken?: string, meta?: RequestMe
     }
   });
 
-  await import("@/server/redis/client").then(({ redis }) =>
-    redis.setex(accessSessionKey(accessToken), accessTokenMaxAgeSeconds, session.id)
-  );
+  await cacheSetEx(accessSessionKey(accessToken), accessTokenMaxAgeSeconds, session.id);
 
   return {
     accessToken,
@@ -355,8 +351,7 @@ export async function rotateRefreshToken(refreshToken?: string, meta?: RequestMe
 
 export async function logoutSession(refreshToken?: string, accessToken?: string) {
   if (accessToken) {
-    const { redis } = await import("@/server/redis/client");
-    await redis.del(accessSessionKey(accessToken));
+    await cacheDel(accessSessionKey(accessToken));
   }
 
   if (!refreshToken) return;

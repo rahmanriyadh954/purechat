@@ -10,7 +10,7 @@ The product is designed to feel clean, trustworthy, fast, family-friendly, and p
 2. Put your real Supabase `DATABASE_URL` and `DIRECT_URL` in `.env`.
 3. Keep `OTP_PROVIDER="console"` for local development.
 4. Keep `STORAGE_DRIVER="local"` for local uploads.
-5. Start Redis if you have it. If Redis is not running, PureChat uses in-memory rate limits in development.
+5. Keep `DISABLE_REDIS="true"` if Redis is not installed. PureChat will use in-memory auth cache, sessions, presence, and rate limits.
 
 ```bash
 npm install
@@ -39,7 +39,8 @@ Change the seed password before sharing any deployed environment.
 - `DATA_ENCRYPTION_KEY`: long random key for encrypted report evidence.
 - `APP_ORIGIN`: app origin, such as `http://localhost:3000`.
 - `NEXT_PUBLIC_APP_URL`: public app URL shown to the browser.
-- `REDIS_URL`: Redis URL. Local dev can fall back to memory.
+- `DISABLE_REDIS`: set to `true` to run without Redis installed.
+- `REDIS_URL`: Redis URL. PureChat falls back to memory when Redis is disabled or unavailable.
 - `STORAGE_DRIVER`: `local` for localhost, `s3` for production.
 - `UPLOAD_DIR`: local upload folder when using local storage.
 - `WEBRTC_STUN_URL`: STUN server URL.
@@ -62,7 +63,7 @@ Never commit real production secrets. The sample secrets in `.env.example` are f
 - Moderation uses local rules and keywords.
 - GIF search uses safe mock data.
 - Uploads are stored under `./uploads`.
-- Redis is optional in development.
+- Redis is optional for localhost. Authentication, OTP, sessions, presence, and rate limiting continue with memory cache when Redis is disabled or unavailable.
 - WebRTC uses the configured STUN server and only needs TURN for production reliability.
 
 ## Vercel Deployment
@@ -96,7 +97,7 @@ npm run db:deploy # Production migration deploy
 - Zod input validation at API boundaries.
 - Same-origin checks for unsafe API methods.
 - Secure HTTP-only cookies.
-- Rate limiting with Redis and dev memory fallback.
+- Rate limiting with Redis and memory fallback.
 - Prisma query APIs by default.
 - CSP and browser security headers.
 - File type, size, and storage-key validation.
