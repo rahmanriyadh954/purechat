@@ -19,7 +19,9 @@ export const registerSchema = z.object({
   username: z.string().min(3).max(32).regex(/^[a-zA-Z0-9_]+$/),
   email: z.string().email().optional(),
   phone: z.string().min(8).optional(),
-  password: z.string().min(10)
+  password: z.string().min(10),
+  gender: z.enum(["MALE", "FEMALE", "PREFER_NOT_TO_SAY"]).optional(),
+  deviceFingerprintHash: z.string().regex(/^[a-f0-9]{64}$/).optional()
 }).refine((data) => data.email || data.phone, {
   message: "Email or phone is required.",
   path: ["email"]

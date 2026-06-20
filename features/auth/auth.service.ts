@@ -36,17 +36,72 @@ function isEmail(identifier: string) {
 
 export async function registerUser(input: unknown, meta: RequestMeta) {
   const data = registerSchema.parse(input);
+  const email = data.email ? normalizeIdentifier(data.email) : undefined;
+  const phone = data.phone?.trim();
+
+  if (email || phone) {
+    const existingIdentity = await prisma.user.findFirst({
+      where: {
+        deletedAt: null,
+        OR: [
+          ...(email ? [{ email }] : []),
+          ...(phone ? [{ phone }] : [])
+        ]
+      },
+      select: { id: true }
+    });
+
+    if (existingIdentity) {
+      throw new Error("An account may already exist with those details. Please sign in or use account recovery.");
+    }
+  }
+
+  if (data.deviceFingerprintHash) {
+    const matchingDevice = await prisma.device.findFirst({
+      where: {
+        fingerprint: data.deviceFingerprintHash
+      },
+      select: {
+        userId: true
+      }
+    });
+
+    if (matchingDevice) {
+      await prisma.duplicateAccountReview.create({
+        data: {
+          attemptedEmail: email,
+          attemptedPhone: phone,
+          attemptedUsername: data.username.toLowerCase(),
+          fingerprintHash: data.deviceFingerprintHash,
+          reason: "Device fingerprint is already associated with another account."
+        }
+      });
+
+      await writeAuditLog({
+        action: "DUPLICATE_ACCOUNT_REVIEW_CREATED",
+        entityType: "Device",
+        metadata: {
+          reason: "fingerprint_match"
+        }
+      });
+
+      throw new Error("This device needs admin review before another account can be created.");
+    }
+  }
+
   const passwordHash = await hash(data.password, 12);
 
   const user = await prisma.user.create({
     data: {
-      email: data.email ? normalizeIdentifier(data.email) : undefined,
-      phone: data.phone,
+      email,
+      phone,
       username: data.username.toLowerCase(),
       displayName: data.displayName,
       passwordHash,
       profile: {
-        create: {}
+        create: {
+          gender: data.gender
+        }
       }
     },
     select: {
@@ -57,6 +112,19 @@ export async function registerUser(input: unknown, meta: RequestMeta) {
       displayName: true
     }
   });
+
+  if (data.deviceFingerprintHash) {
+    await prisma.device.create({
+      data: {
+        userId: user.id,
+        type: detectDeviceType(meta.userAgent),
+        name: "Registration device",
+        fingerprint: data.deviceFingerprintHash,
+        duplicateReviewStatus: "APPROVED",
+        lastActiveAt: new Date()
+      }
+    });
+  }
 
   if (user.email) {
     await createOtpChallenge({

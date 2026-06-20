@@ -169,6 +169,9 @@ export async function listReportsForAdmin() {
       },
       message: {
         select: { id: true, type: true, createdAt: true }
+      },
+      chat: {
+        select: { id: true, title: true, type: true }
       }
     },
     orderBy: { createdAt: "desc" },
@@ -179,7 +182,7 @@ export async function listReportsForAdmin() {
     ...report,
     evidence: report.encryptedEvidence
       ? JSON.parse(decryptSensitiveText(report.encryptedEvidence))
-      : null
+      : report.evidence
   }));
 }
 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { getSoundSettings, saveSoundSettings, useSoundSystem } from "@/hooks/use-sound-system";
 
 type SessionItem = {
   id: string;
@@ -21,7 +22,9 @@ type SessionItem = {
 
 export function SecurityPanel() {
   const router = useRouter();
+  const sounds = useSoundSystem();
   const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [soundSettings, setSoundSettings] = useState(getSoundSettings());
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -112,7 +115,15 @@ export function SecurityPanel() {
 
   useEffect(() => {
     void loadSessions();
+    setSoundSettings(getSoundSettings());
   }, []);
+
+  function updateSoundSetting(key: keyof typeof soundSettings, value: boolean) {
+    const next = { ...soundSettings, [key]: value };
+    setSoundSettings(next);
+    saveSoundSettings(next);
+    if (!next.muted) sounds.play("tap");
+  }
 
   return (
     <section className="mx-auto w-full max-w-3xl space-y-6 px-4 py-10">
@@ -146,6 +157,22 @@ export function SecurityPanel() {
               Turn off
             </Button>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-card p-4">
+        <div className="mb-4">
+          <h2 className="font-medium">Sound settings</h2>
+          <p className="text-sm text-muted-foreground">
+            Soft generated tones. No copyrighted audio assets are used.
+          </p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <SoundToggle label="Mute all sounds" checked={soundSettings.muted} onChange={(value) => updateSoundSetting("muted", value)} />
+          <SoundToggle label="Message sounds" checked={soundSettings.messageSounds} onChange={(value) => updateSoundSetting("messageSounds", value)} />
+          <SoundToggle label="Call sounds" checked={soundSettings.callSounds} onChange={(value) => updateSoundSetting("callSounds", value)} />
+          <SoundToggle label="Warning sounds" checked={soundSettings.warningSounds} onChange={(value) => updateSoundSetting("warningSounds", value)} />
+          <SoundToggle label="Soft tap sounds" checked={soundSettings.tapSounds} onChange={(value) => updateSoundSetting("tapSounds", value)} />
         </div>
       </div>
 
@@ -201,5 +228,28 @@ export function SecurityPanel() {
         ))}
       </div>
     </section>
+  );
+}
+
+function SoundToggle({
+  label,
+  checked,
+  onChange
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-left text-sm"
+      type="button"
+      onClick={() => onChange(!checked)}
+    >
+      <span>{label}</span>
+      <span className={`rounded-full px-2 py-0.5 text-xs ${checked ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+        {checked ? "On" : "Off"}
+      </span>
+    </button>
   );
 }

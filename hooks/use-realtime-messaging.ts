@@ -12,12 +12,26 @@ export type RealtimeChat = {
   avatarUrl?: string | null;
   lastMessage?: string | null;
   lastMessageAt?: string | Date | null;
+  unreadCount: number;
+  searchText: string;
+  safetyStatus: "SAFE" | "UNSURE" | "UNSAFE";
+  anonymous: {
+    status: "PENDING" | "ACCEPTED" | "REJECTED" | "REPORTED" | "BLOCKED" | "EXPIRED" | "REVEALED";
+    isSender: boolean;
+    isReceiver: boolean;
+    expiresAt: string | Date;
+    approvedAt?: string | Date | null;
+    revealedAt?: string | Date | null;
+    senderAlias: string;
+    receiverAlias: string;
+  } | null;
   members: Array<{
     userId: string;
     displayName: string;
     username: string;
     avatarUrl?: string | null;
     lastSeenAt?: string | Date | null;
+    online?: boolean;
   }>;
 };
 
@@ -72,6 +86,9 @@ export function useRealtimeMessaging() {
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [chats, setChats] = useState<RealtimeChat[]>([]);
   const [messagesByChat, setMessagesByChat] = useState<Record<string, RealtimeMessage[]>>({});
+  const [loadingChats, setLoadingChats] = useState(true);
+  const [loadingMessagesByChat, setLoadingMessagesByChat] = useState<Record<string, boolean>>({});
+  const [messageErrorsByChat, setMessageErrorsByChat] = useState<Record<string, string>>({});
   const [typingByChat, setTypingByChat] = useState<Record<string, string[]>>({});
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   const [connected, setConnected] = useState(false);
@@ -79,43 +96,72 @@ export function useRealtimeMessaging() {
 
   const activeChatIds = useMemo(() => chats.map((chat) => chat.id), [chats]);
 
+  const refreshChats = useCallback(async () => {
+    const chatsResponse = await fetch("/api/chats");
+    const chatsData = await chatsResponse.json();
+    if (!chatsResponse.ok) {
+      throw new Error(chatsData.error ?? "Could not load chats.");
+    }
+    setChats(chatsData.chats);
+    return chatsData.chats as RealtimeChat[];
+  }, []);
+
   const loadMessages = useCallback(async (chatId: string) => {
-    const response = await fetch(`/api/chats/${chatId}/messages`);
-    if (!response.ok) return;
-    const data = await response.json();
-    setMessagesByChat((current) => ({
-      ...current,
-      [chatId]: data.messages
-    }));
+    setLoadingMessagesByChat((current) => ({ ...current, [chatId]: true }));
+    setMessageErrorsByChat((current) => ({ ...current, [chatId]: "" }));
+
+    try {
+      const response = await fetch(`/api/chats/${chatId}/messages`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error ?? "Could not load messages.");
+      }
+      setMessagesByChat((current) => ({
+        ...current,
+        [chatId]: data.messages
+      }));
+    } catch (error) {
+      setMessageErrorsByChat((current) => ({
+        ...current,
+        [chatId]: error instanceof Error ? error.message : "Could not load messages."
+      }));
+    } finally {
+      setLoadingMessagesByChat((current) => ({ ...current, [chatId]: false }));
+    }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadInitialData() {
-      const meResponse = await fetch("/api/auth/me");
-      if (!meResponse.ok) {
-        setError("Sign in to use real-time chat.");
-        return;
+      setLoadingChats(true);
+      setError("");
+
+      try {
+        const meResponse = await fetch("/api/auth/me");
+        const meData = await meResponse.json();
+        if (!meResponse.ok) {
+          throw new Error(meData.error ?? "Sign in to use chat.");
+        }
+
+        if (cancelled) return;
+        setCurrentUser(meData.user);
+
+        if (cancelled) return;
+        const nextChats = await refreshChats();
+
+        await Promise.all(
+          nextChats.slice(0, 5).map((chat: RealtimeChat) => loadMessages(chat.id))
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setError(error instanceof Error ? error.message : "Could not load chats.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingChats(false);
+        }
       }
-
-      const meData = await meResponse.json();
-      if (cancelled) return;
-      setCurrentUser(meData.user);
-
-      const chatsResponse = await fetch("/api/chats");
-      if (!chatsResponse.ok) {
-        setError("Could not load chats.");
-        return;
-      }
-
-      const chatsData = await chatsResponse.json();
-      if (cancelled) return;
-      setChats(chatsData.chats);
-
-      await Promise.all(
-        chatsData.chats.slice(0, 5).map((chat: RealtimeChat) => loadMessages(chat.id))
-      );
     }
 
     void loadInitialData();
@@ -123,7 +169,7 @@ export function useRealtimeMessaging() {
     return () => {
       cancelled = true;
     };
-  }, [loadMessages]);
+  }, [loadMessages, refreshChats]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -145,15 +191,8 @@ export function useRealtimeMessaging() {
     socket.on("disconnect", () => setConnected(false));
 
     socket.on(socketEvents.messageNew, ({ message }) => {
-      setMessagesByChat((current) => {
-        const existing = current[message.chatId] ?? [];
-        if (existing.some((item) => item.id === message.id)) return current;
-
-        return {
-          ...current,
-          [message.chatId]: [...existing, message]
-        };
-      });
+      appendMessage(message);
+      updateChatPreview(message, message.senderId !== currentUser.id);
 
       if (message.senderId !== currentUser.id) {
         socket.emit(socketEvents.messageDelivered, {
@@ -211,6 +250,18 @@ export function useRealtimeMessaging() {
     };
   }, [activeChatIds, currentUser]);
 
+  function appendMessage(message: RealtimeMessage) {
+    setMessagesByChat((current) => {
+      const existing = current[message.chatId] ?? [];
+      if (existing.some((item) => item.id === message.id)) return current;
+
+      return {
+        ...current,
+        [message.chatId]: [...existing, message]
+      };
+    });
+  }
+
   function replaceMessage(message: RealtimeMessage) {
     setMessagesByChat((current) => ({
       ...current,
@@ -218,6 +269,28 @@ export function useRealtimeMessaging() {
         item.id === message.id ? message : item
       )
     }));
+    updateChatPreview(message);
+  }
+
+  function updateChatPreview(message: RealtimeMessage, incrementUnread = false) {
+    setChats((current) => {
+      const nextChats = current.map((chat) =>
+        chat.id === message.chatId
+          ? {
+              ...chat,
+              lastMessage: getMessagePreview(message),
+              lastMessageAt: message.createdAt,
+              unreadCount: incrementUnread ? chat.unreadCount + 1 : chat.unreadCount
+            }
+          : chat
+      );
+
+      return nextChats.sort((a, b) => {
+        const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bTime - aTime;
+      });
+    });
   }
 
   function updateReceipt(
@@ -244,19 +317,49 @@ export function useRealtimeMessaging() {
     }));
   }
 
-  const sendMessage = useCallback((chatId: string, body: string) => {
-    const trimmed = body.trim();
-    if (!trimmed) return;
+  const emitWithAck = useCallback(<T,>(event: string, payload: unknown) => {
+    return new Promise<T>((resolve, reject) => {
+      const socket = socketRef.current;
+      if (!socket?.connected) {
+        reject(new Error("Chat connection is offline."));
+        return;
+      }
 
-    socketRef.current?.emit(socketEvents.messageSend, {
+      socket.timeout(8000).emit(event, payload, (error: Error | null, result: { ok?: boolean; error?: string } & T) => {
+        if (error) {
+          reject(new Error("Chat request timed out."));
+          return;
+        }
+        if (!result?.ok) {
+          reject(new Error(result?.error ?? "Chat request failed."));
+          return;
+        }
+        resolve(result);
+      });
+    });
+  }, []);
+
+  const sendMessage = useCallback(async (chatId: string, body: string) => {
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("Message cannot be empty.");
+
+    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageSend, {
       chatId,
       body: trimmed,
       clientId: crypto.randomUUID()
     });
-  }, []);
+
+    appendMessage(result.message);
+    updateChatPreview(result.message);
+  }, [emitWithAck]);
 
   const markRead = useCallback((chatId: string, messageId: string) => {
     socketRef.current?.emit(socketEvents.messageRead, { chatId, messageId });
+    setChats((current) =>
+      current.map((chat) =>
+        chat.id === chatId ? { ...chat, unreadCount: 0 } : chat
+      )
+    );
   }, []);
 
   const startTyping = useCallback((chatId: string) => {
@@ -267,17 +370,22 @@ export function useRealtimeMessaging() {
     socketRef.current?.emit(socketEvents.typingStop, { chatId });
   }, []);
 
-  const editMessage = useCallback((chatId: string, messageId: string, body: string) => {
-    socketRef.current?.emit(socketEvents.messageEdit, { chatId, messageId, body });
-  }, []);
+  const editMessage = useCallback(async (chatId: string, messageId: string, body: string) => {
+    const trimmed = body.trim();
+    if (!trimmed) throw new Error("Message cannot be empty.");
+    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageEdit, { chatId, messageId, body: trimmed });
+    replaceMessage(result.message);
+  }, [emitWithAck]);
 
-  const deleteMessage = useCallback((chatId: string, messageId: string) => {
-    socketRef.current?.emit(socketEvents.messageDelete, { chatId, messageId });
-  }, []);
+  const deleteMessage = useCallback(async (chatId: string, messageId: string) => {
+    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageDelete, { chatId, messageId });
+    replaceMessage(result.message);
+  }, [emitWithAck]);
 
-  const addReaction = useCallback((chatId: string, messageId: string, emoji: string) => {
-    socketRef.current?.emit(socketEvents.reactionAdd, { chatId, messageId, emoji });
-  }, []);
+  const addReaction = useCallback(async (chatId: string, messageId: string, emoji: string) => {
+    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.reactionAdd, { chatId, messageId, emoji });
+    replaceMessage(result.message);
+  }, [emitWithAck]);
 
   const sendAttachment = useCallback(
     async (
@@ -315,7 +423,7 @@ export function useRealtimeMessaging() {
         throw new Error("File upload failed.");
       }
 
-      socketRef.current?.emit(socketEvents.attachmentComplete, {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.attachmentComplete, {
         chatId,
         fileName: file.name,
         mimeType: file.type,
@@ -324,26 +432,41 @@ export function useRealtimeMessaging() {
         storageKey: presign.storageKey,
         caption
       });
+
+      appendMessage(result.message);
+      updateChatPreview(result.message);
     },
-    []
+    [emitWithAck]
   );
 
-  const sendGif = useCallback((chatId: string, gifUrl: string, title?: string) => {
-    socketRef.current?.emit(socketEvents.gifSend, { chatId, gifUrl, title });
-  }, []);
+  const sendGif = useCallback(async (chatId: string, gifUrl: string, title?: string) => {
+    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.gifSend, { chatId, gifUrl, title });
+    appendMessage(result.message);
+    updateChatPreview(result.message);
+  }, [emitWithAck]);
 
-  const sendSticker = useCallback((chatId: string, stickerId: string) => {
-    socketRef.current?.emit(socketEvents.stickerSend, { chatId, stickerId });
+  const sendSticker = useCallback(async (chatId: string, stickerId: string) => {
+    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.stickerSend, { chatId, stickerId });
+    appendMessage(result.message);
+    updateChatPreview(result.message);
+  }, [emitWithAck]);
+
+  const hideChat = useCallback((chatId: string) => {
+    setChats((current) => current.filter((chat) => chat.id !== chatId));
   }, []);
 
   return {
     currentUser,
     chats,
     messagesByChat,
+    loadingChats,
+    loadingMessagesByChat,
+    messageErrorsByChat,
     typingByChat,
     onlineUserIds,
     connected,
     error,
+    refreshChats,
     loadMessages,
     sendMessage,
     markRead,
@@ -354,6 +477,27 @@ export function useRealtimeMessaging() {
     addReaction,
     sendAttachment,
     sendGif,
-    sendSticker
+    sendSticker,
+    hideChat
   };
+}
+
+function getMessagePreview(message: RealtimeMessage) {
+  if (message.deletedAt) return "Message deleted";
+  if (message.body?.trim()) return message.body;
+
+  const metadata = message.metadata && typeof message.metadata === "object"
+    ? message.metadata
+    : null;
+  if (metadata && "gifUrl" in metadata) return "GIF";
+  if (metadata && "storageKey" in metadata) return "Sticker";
+
+  const firstAttachment = message.attachments?.[0];
+  if (firstAttachment?.fileType === "voice") return "Voice message";
+  if (firstAttachment?.mimeType.startsWith("image/")) return "Image";
+  if (firstAttachment?.mimeType.startsWith("video/")) return "Video";
+  if (firstAttachment?.mimeType.startsWith("audio/")) return "Audio";
+  if (firstAttachment) return "Document";
+
+  return "New message";
 }

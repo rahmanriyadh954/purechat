@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MonitorUp, Phone, PhoneOff, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -19,10 +19,10 @@ type CallOverlayProps = {
   } | null;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
-  onAccept: () => void;
-  onReject: () => void;
-  onEnd: () => void;
-  onScreenShare: () => void;
+  onAccept: () => Promise<void>;
+  onReject: () => Promise<void>;
+  onEnd: () => Promise<void>;
+  onScreenShare: () => Promise<void>;
 };
 
 export function CallOverlay({
@@ -35,6 +35,24 @@ export function CallOverlay({
   onEnd,
   onScreenShare
 }: CallOverlayProps) {
+  const [busyAction, setBusyAction] = useState<"accept" | "reject" | "end" | "share" | null>(null);
+  const [error, setError] = useState("");
+
+  async function runAction(
+    action: "accept" | "reject" | "end" | "share",
+    callback: () => Promise<void>
+  ) {
+    setBusyAction(action);
+    setError("");
+    try {
+      await callback();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Call action failed.");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   if (incomingCall) {
     return (
       <div className="fixed bottom-5 right-5 z-50 w-[min(92vw,380px)] rounded-lg border bg-card p-4 shadow-xl">
@@ -45,14 +63,19 @@ export function CallOverlay({
         <p className="text-sm text-muted-foreground">
           {incomingCall.type === "VIDEO" ? "Video call" : "Audio call"}
         </p>
+        {error ? (
+          <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
         <div className="mt-4 flex gap-2">
-          <Button className="flex-1 gap-2" onClick={onAccept}>
+          <Button className="flex-1 gap-2" disabled={Boolean(busyAction)} onClick={() => void runAction("accept", onAccept)}>
             <Phone className="size-4" />
-            Accept
+            {busyAction === "accept" ? "Accepting" : "Accept"}
           </Button>
-          <Button className="flex-1 gap-2" variant="destructive" onClick={onReject}>
+          <Button className="flex-1 gap-2" disabled={Boolean(busyAction)} variant="destructive" onClick={() => void runAction("reject", onReject)}>
             <PhoneOff className="size-4" />
-            Reject
+            {busyAction === "reject" ? "Rejecting" : "Reject"}
           </Button>
         </div>
       </div>
@@ -73,17 +96,28 @@ export function CallOverlay({
             {activeCall.type === "VIDEO" ? "Video call" : "Audio call"}
           </p>
           <p className="text-sm text-muted-foreground">
-            {activeCall.isGroupCall ? "Group call" : "1-to-1 call"} · {activeCall.status}
+            {activeCall.isGroupCall ? "Group call" : "1-to-1 call"} - {activeCall.status.toLowerCase()}
           </p>
+          {error ? <p className="mt-1 text-sm text-destructive">{error}</p> : null}
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" className="gap-2" onClick={onScreenShare}>
+          <Button
+            variant="secondary"
+            className="gap-2"
+            disabled={Boolean(busyAction)}
+            onClick={() => void runAction("share", onScreenShare)}
+          >
             <MonitorUp className="size-4" />
-            Share screen
+            {busyAction === "share" ? "Sharing" : "Share screen"}
           </Button>
-          <Button variant="destructive" className="gap-2" onClick={onEnd}>
+          <Button
+            variant="destructive"
+            className="gap-2"
+            disabled={Boolean(busyAction)}
+            onClick={() => void runAction("end", onEnd)}
+          >
             <PhoneOff className="size-4" />
-            End
+            {busyAction === "end" ? "Ending" : "End"}
           </Button>
         </div>
       </div>

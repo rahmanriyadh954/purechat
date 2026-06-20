@@ -304,21 +304,29 @@ export function createSocketServer(httpServer: HttpServer) {
       }
     });
 
-    authedSocket.on(socketEvents.reactionAdd, async (payload: ReactionPayload) => {
+    authedSocket.on(socketEvents.reactionAdd, async (payload: ReactionPayload, ack?: (value: unknown) => void) => {
       try {
         const message = await addReaction(payload, userId);
         io.to(`chat:${payload.chatId}`).emit(socketEvents.reactionUpdated, { message: presentMessage(message) });
-      } catch {
-        // Ignore invalid reaction updates.
+        ack?.({ ok: true, message: presentMessage(message) });
+      } catch (error) {
+        ack?.({
+          ok: false,
+          error: error instanceof Error ? error.message : "Could not react to message."
+        });
       }
     });
 
-    authedSocket.on(socketEvents.reactionRemove, async (payload: ReactionPayload) => {
+    authedSocket.on(socketEvents.reactionRemove, async (payload: ReactionPayload, ack?: (value: unknown) => void) => {
       try {
         const message = await removeReaction(payload, userId);
         io.to(`chat:${payload.chatId}`).emit(socketEvents.reactionUpdated, { message: presentMessage(message) });
-      } catch {
-        // Ignore invalid reaction updates.
+        ack?.({ ok: true, message: presentMessage(message) });
+      } catch (error) {
+        ack?.({
+          ok: false,
+          error: error instanceof Error ? error.message : "Could not remove reaction."
+        });
       }
     });
 

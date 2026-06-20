@@ -11,6 +11,18 @@ type CallRecord = {
   status: string;
   isGroupCall: boolean;
   startedById?: string | null;
+  startedAt?: string;
+  durationSeconds?: number | null;
+  startedBy?: {
+    displayName: string;
+    username: string;
+    avatarUrl?: string | null;
+  } | null;
+  chat?: {
+    id: string;
+    title: string | null;
+    type: string;
+  } | null;
   participants: Array<{
     userId: string;
     status: string;
@@ -34,12 +46,15 @@ export function useWebRtcCalls() {
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const incomingCallRef = useRef<CallRecord | null>(null);
   const [activeCall, setActiveCall] = useState<CallRecord | null>(null);
   const [incomingCall, setIncomingCall] = useState<CallRecord | null>(null);
+  const [missedCalls, setMissedCalls] = useState<CallRecord[]>([]);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
   const [callState, setCallState] = useState<"idle" | "ringing" | "active">("idle");
+  const [error, setError] = useState("");
 
   useEffect(() => {
     async function loadConfig() {
@@ -62,6 +77,7 @@ export function useWebRtcCalls() {
 
     socket.on(socketEvents.callIncoming, ({ call }) => {
       setIncomingCall(call);
+      incomingCallRef.current = call;
       setCallState("ringing");
     });
 
@@ -73,18 +89,26 @@ export function useWebRtcCalls() {
     socket.on(socketEvents.callAccepted, ({ call }) => {
       setActiveCall(call);
       setIncomingCall(null);
+      incomingCallRef.current = null;
       setCallState("active");
     });
 
     socket.on(socketEvents.callRejected, ({ call }) => {
-      setActiveCall(call);
+      setActiveCall(null);
       setIncomingCall(null);
+      incomingCallRef.current = null;
       setCallState("idle");
+      cleanupMedia();
     });
 
     socket.on(socketEvents.callEnded, ({ call }) => {
-      setActiveCall(call);
+      const missedIncomingCall = incomingCallRef.current;
+      if (missedIncomingCall?.id === call.id) {
+        setMissedCalls((current) => [call, ...current.filter((item) => item.id !== call.id)].slice(0, 5));
+      }
+      setActiveCall(null);
       setIncomingCall(null);
+      incomingCallRef.current = null;
       setCallState("idle");
       cleanupMedia();
     });
@@ -120,6 +144,28 @@ export function useWebRtcCalls() {
       cleanupMedia();
     };
   }, [iceServers]);
+
+  function emitWithAck<T>(event: string, payload: unknown) {
+    return new Promise<T>((resolve, reject) => {
+      const socket = socketRef.current;
+      if (!socket?.connected) {
+        reject(new Error("Call connection is offline."));
+        return;
+      }
+
+      socket.timeout(8000).emit(event, payload, (error: Error | null, result: { ok?: boolean; error?: string } & T) => {
+        if (error) {
+          reject(new Error("Call request timed out."));
+          return;
+        }
+        if (!result?.ok) {
+          reject(new Error(result?.error ?? "Call request failed."));
+          return;
+        }
+        resolve(result);
+      });
+    });
+  }
 
   const ensurePeer = useCallback(
     async (callId: string, chatId: string, targetUserId: string) => {
@@ -158,6 +204,13 @@ export function useWebRtcCalls() {
   );
 
   async function getLocalMedia(type: "AUDIO" | "VIDEO") {
+    if (!("RTCPeerConnection" in window)) {
+      throw new Error("WebRTC is not available in this browser.");
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Microphone and camera access is not available in this browser.");
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: true,
       video: type === "VIDEO"
@@ -168,10 +221,10 @@ export function useWebRtcCalls() {
   }
 
   async function startCall(input: StartCallInput) {
-    await getLocalMedia(input.type);
-
-    socketRef.current?.emit(socketEvents.callStart, input, async (result: { ok: boolean; call?: CallRecord }) => {
-      if (!result.ok || !result.call) return;
+    setError("");
+    try {
+      await getLocalMedia(input.type);
+      const result = await emitWithAck<{ call: CallRecord }>(socketEvents.callStart, input);
       setActiveCall(result.call);
       setCallState("ringing");
 
@@ -187,36 +240,71 @@ export function useWebRtcCalls() {
         targetUserId,
         sdp: offer.sdp
       });
-    });
+    } catch (error) {
+      cleanupMedia();
+      const message = error instanceof Error ? error.message : "Could not start call.";
+      setError(message);
+      throw new Error(message);
+    }
   }
 
   async function acceptIncomingCall() {
     if (!incomingCall) return;
-    await getLocalMedia(incomingCall.type);
-    socketRef.current?.emit(socketEvents.callAccept, { callId: incomingCall.id });
-    setActiveCall(incomingCall);
-    setIncomingCall(null);
-    setCallState("active");
-  }
-
-  function rejectIncomingCall() {
-    if (!incomingCall) return;
-    socketRef.current?.emit(socketEvents.callReject, { callId: incomingCall.id });
-    setIncomingCall(null);
-    setCallState("idle");
-  }
-
-  function endActiveCall() {
-    if (activeCall) {
-      socketRef.current?.emit(socketEvents.callEnd, { callId: activeCall.id });
+    setError("");
+    try {
+      await getLocalMedia(incomingCall.type);
+      const result = await emitWithAck<{ call: CallRecord }>(socketEvents.callAccept, { callId: incomingCall.id });
+      setActiveCall(result.call);
+      setIncomingCall(null);
+      incomingCallRef.current = null;
+      setCallState("active");
+    } catch (error) {
+      cleanupMedia();
+      const message = error instanceof Error ? error.message : "Could not accept call.";
+      setError(message);
+      throw new Error(message);
     }
-    setCallState("idle");
-    setActiveCall(null);
-    cleanupMedia();
+  }
+
+  async function rejectIncomingCall() {
+    if (!incomingCall) return;
+    setError("");
+    try {
+      await emitWithAck<{ call: CallRecord }>(socketEvents.callReject, { callId: incomingCall.id });
+      setIncomingCall(null);
+      incomingCallRef.current = null;
+      setCallState("idle");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not reject call.";
+      setError(message);
+      throw new Error(message);
+    }
+  }
+
+  async function endActiveCall() {
+    setError("");
+    try {
+      if (activeCall) {
+        await emitWithAck<{ call: CallRecord }>(socketEvents.callEnd, { callId: activeCall.id });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not end call.";
+      setError(message);
+      throw new Error(message);
+    } finally {
+      setCallState("idle");
+      setActiveCall(null);
+      cleanupMedia();
+    }
   }
 
   async function startScreenShare() {
-    if (!activeCall || !peerRef.current) return;
+    if (!activeCall || !peerRef.current) {
+      throw new Error("Screen sharing is available after a call connects.");
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("Screen sharing is not available in this browser.");
+    }
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio: false
@@ -251,16 +339,23 @@ export function useWebRtcCalls() {
     setRemoteStream(null);
   }
 
+  function dismissMissedCall(callId: string) {
+    setMissedCalls((current) => current.filter((call) => call.id !== callId));
+  }
+
   return {
     activeCall,
     incomingCall,
+    missedCalls,
     callState,
+    error,
     localStream,
     remoteStream,
     startCall,
     acceptIncomingCall,
     rejectIncomingCall,
     endActiveCall,
-    startScreenShare
+    startScreenShare,
+    dismissMissedCall
   };
 }

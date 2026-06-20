@@ -33,6 +33,7 @@ enum ChatType {
   DIRECT
   GROUP
   SAVED
+  ANONYMOUS
 }
 
 enum ChatMemberRole {
@@ -156,10 +157,38 @@ enum WarningStatus {
   REVOKED
 }
 
+enum ConversationSafetyStatus {
+  SAFE
+  UNSURE
+  UNSAFE
+}
+
+enum AnonymousConversationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  REPORTED
+  BLOCKED
+  EXPIRED
+  REVEALED
+}
+
 enum PrivacyVisibility {
   EVERYONE
   CONTACTS
   NOBODY
+}
+
+enum ProfileGender {
+  MALE
+  FEMALE
+  PREFER_NOT_TO_SAY
+}
+
+enum DuplicateReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum OtpPurpose {
@@ -216,6 +245,10 @@ model User {
   auditLogs        AuditLog[]          @relation("AuditActor")
   stickerPacks     StickerPack[]
   savedMessages    SavedMessage[]
+  conversationSafetyStates ConversationSafetyState[]
+  conversationSafetyEvents ConversationSafetyEvent[]
+  anonymousConversationsSent AnonymousConversation[] @relation("AnonymousConversationSender")
+  anonymousConversationsReceived AnonymousConversation[] @relation("AnonymousConversationReceiver")
   groupInvitesCreated GroupInvite[]       @relation("GroupInviteCreator")
   groupJoinRequests   GroupJoinRequest[]
   groupJoinReviews    GroupJoinRequest[]  @relation("GroupJoinReviewer")
@@ -236,6 +269,7 @@ model Profile {
   language               String            @default("en")
   timezone               String?
   dateOfBirth            DateTime?
+  gender                 ProfileGender?
   lastSeenVisibility     PrivacyVisibility @default(CONTACTS)
   profilePhotoVisibility PrivacyVisibility @default(CONTACTS)
   aboutVisibility        PrivacyVisibility @default(CONTACTS)
@@ -303,13 +337,32 @@ model Device {
   fingerprint  String?
   lastActiveAt DateTime?
   trusted      Boolean    @default(false)
+  duplicateReviewStatus DuplicateReviewStatus?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   sessions     Session[]
 
   @@index([userId])
   @@index([fingerprint])
+  @@index([duplicateReviewStatus])
   @@index([lastActiveAt])
+}
+
+model DuplicateAccountReview {
+  id              String                @id @default(cuid())
+  attemptedEmail  String?
+  attemptedPhone  String?
+  attemptedUsername String?
+  fingerprintHash String?
+  reason          String
+  status          DuplicateReviewStatus @default(PENDING)
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime              @default(now())
+
+  @@index([fingerprintHash])
+  @@index([status])
+  @@index([createdAt])
 }
 
 model Contact {
@@ -340,19 +393,24 @@ model Chat {
   lastMessageAt DateTime?
   isEncrypted   Boolean      @default(false)
   isArchived    Boolean      @default(false)
+  expiresAt     DateTime?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
   deletedAt     DateTime?
   group         Group?
+  anonymousRequest AnonymousConversation?
   members       ChatMember[]
   messages      Message[]
   calls         Call[]
   reports       Report[]
+  safetyStates  ConversationSafetyState[]
+  safetyEvents  ConversationSafetyEvent[]
   pinnedAnnouncements GroupPinnedAnnouncement[]
 
   @@index([type])
   @@index([createdById])
   @@index([lastMessageAt])
+  @@index([expiresAt])
 }
 
 model Group {
@@ -602,6 +660,66 @@ model Block {
   @@unique([blockerId, blockedId])
   @@index([blockerId])
   @@index([blockedId])
+}
+
+model ConversationSafetyState {
+  id        String                   @id @default(cuid())
+  chatId    String
+  chat      Chat                     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status    ConversationSafetyStatus @default(SAFE)
+  note      String?
+  updatedAt DateTime                 @updatedAt
+  createdAt DateTime                 @default(now())
+
+  @@unique([chatId, userId])
+  @@index([chatId])
+  @@index([userId])
+  @@index([status])
+}
+
+model ConversationSafetyEvent {
+  id        String                   @id @default(cuid())
+  chatId    String
+  chat      Chat                     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status    ConversationSafetyStatus
+  action    String?
+  note      String?
+  createdAt DateTime                 @default(now())
+
+  @@index([chatId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AnonymousConversation {
+  id               String                      @id @default(cuid())
+  chatId           String                      @unique
+  chat             Chat                        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  senderId         String
+  sender           User                        @relation("AnonymousConversationSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId       String
+  receiver         User                        @relation("AnonymousConversationReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  senderAlias      String
+  receiverAlias    String
+  status           AnonymousConversationStatus @default(PENDING)
+  approvedAt       DateTime?
+  rejectedAt       DateTime?
+  reportedAt       DateTime?
+  blockedAt        DateTime?
+  revealedAt       DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([status])
+  @@index([expiresAt])
 }
 
 model Report {

@@ -145,8 +145,9 @@ export async function rejectCall(input: unknown, userId: string) {
     }
   });
 
-  return prisma.call.findUniqueOrThrow({
+  return prisma.call.update({
     where: { id: data.callId },
+    data: { status: "REJECTED" },
     include: callInclude
   });
 }
@@ -164,7 +165,20 @@ export async function endCall(input: unknown, userId: string) {
     await tx.callParticipant.updateMany({
       where: {
         callId: data.callId,
-        leftAt: null
+        leftAt: null,
+        status: "RINGING"
+      },
+      data: {
+        status: "MISSED",
+        leftAt: endedAt
+      }
+    });
+
+    await tx.callParticipant.updateMany({
+      where: {
+        callId: data.callId,
+        leftAt: null,
+        status: { not: "MISSED" }
       },
       data: {
         status: "LEFT",
@@ -175,7 +189,7 @@ export async function endCall(input: unknown, userId: string) {
     return tx.call.update({
       where: { id: data.callId },
       data: {
-        status: "ENDED",
+        status: call.answeredAt ? "ENDED" : "MISSED",
         endedAt,
         durationSeconds
       },

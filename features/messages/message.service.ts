@@ -44,6 +44,12 @@ const messageInclude = {
   },
   readReceipts: true,
   attachments: true
+  ,
+  chat: {
+    select: {
+      anonymousRequest: true
+    }
+  }
 } as const;
 
 export function presentMessage<T extends object>(message: T) {
@@ -51,13 +57,57 @@ export function presentMessage<T extends object>(message: T) {
     ? (message as { attachments?: Array<{ sizeBytes: bigint }> }).attachments
     : undefined;
 
-  return {
+  const chat = "chat" in message
+    ? (message as {
+        chat?: {
+          anonymousRequest?: {
+            senderId: string;
+            receiverId: string;
+            senderAlias: string;
+            receiverAlias: string;
+            revealedAt?: Date | string | null;
+          } | null;
+        };
+        senderId?: string | null;
+        sender?: { id?: string; displayName?: string; username?: string; avatarUrl?: string | null } | null;
+      }).chat
+    : undefined;
+  const anonymous = chat?.anonymousRequest;
+  const shouldMask = anonymous && !anonymous.revealedAt;
+  const senderId = "senderId" in message
+    ? (message as { senderId?: string | null }).senderId
+    : undefined;
+  const senderAlias = anonymous && senderId === anonymous.senderId
+    ? anonymous.senderAlias
+    : anonymous && senderId === anonymous.receiverId
+      ? anonymous.receiverAlias
+      : "Guest";
+
+  const presented = {
     ...message,
     attachments: (attachments ?? []).map((attachment) => ({
       ...attachment,
       sizeBytes: attachment.sizeBytes.toString()
-    }))
+    })),
+    ...(shouldMask
+      ? {
+          sender: senderId
+            ? {
+                id: senderId,
+                displayName: senderAlias,
+                username: "",
+                avatarUrl: null
+              }
+            : null
+        }
+      : {})
   };
+
+  if ("chat" in presented) {
+    delete (presented as { chat?: unknown }).chat;
+  }
+
+  return presented;
 }
 
 async function assertGroupActionAllowed(
@@ -98,10 +148,36 @@ async function assertGroupActionAllowed(
   }
 }
 
+async function assertAnonymousChatAllowed(chatId: string) {
+  const anonymous = await prisma.anonymousConversation.findUnique({
+    where: { chatId },
+    select: { status: true, expiresAt: true }
+  });
+
+  if (!anonymous) return;
+  if (anonymous.expiresAt < new Date()) {
+    throw new Error("This anonymous conversation has expired.");
+  }
+  if (!["ACCEPTED", "REVEALED"].includes(anonymous.status)) {
+    throw new Error("The receiver must accept this anonymous request before chatting.");
+  }
+}
+
+async function assertNotAnonymousChat(chatId: string, message: string) {
+  const anonymous = await prisma.anonymousConversation.findUnique({
+    where: { chatId },
+    select: { id: true, revealedAt: true }
+  });
+  if (anonymous && !anonymous.revealedAt) {
+    throw new Error(message);
+  }
+}
+
 export async function sendTextMessage(input: unknown, senderId: string) {
   const data = sendMessageSchema.parse(input);
   await assertUserCanAct(senderId);
   await assertChatMember(senderId, data.chatId);
+  await assertAnonymousChatAllowed(data.chatId);
   await assertGroupActionAllowed(data.chatId, senderId, "send");
   const familyMode = await getFamilyModeForUser(senderId);
   const safety = evaluateTextSafety(data.body, Boolean(familyMode?.familyModeEnabled));
@@ -168,6 +244,8 @@ export async function createAttachmentUpload(input: unknown, userId: string) {
   const data = presignUploadSchema.parse(input);
   await assertUserCanAct(userId);
   await assertChatMember(userId, data.chatId);
+  await assertAnonymousChatAllowed(data.chatId);
+  await assertNotAnonymousChat(data.chatId, "Media is disabled in anonymous mode for safety.");
   await assertGroupActionAllowed(data.chatId, userId, "upload");
   const familyMode = await getFamilyModeForUser(userId);
   if (familyMode?.familyModeEnabled && familyMode.filterMedia) {
@@ -198,6 +276,8 @@ export async function completeAttachmentMessage(input: unknown, senderId: string
   const data = completeUploadSchema.parse(input);
   await assertUserCanAct(senderId);
   await assertChatMember(senderId, data.chatId);
+  await assertAnonymousChatAllowed(data.chatId);
+  await assertNotAnonymousChat(data.chatId, "Media is disabled in anonymous mode for safety.");
   await assertGroupActionAllowed(data.chatId, senderId, "upload");
   validateUpload(data);
   assertStorageKeyBelongsToUpload({
@@ -270,6 +350,8 @@ export async function sendGifMessage(
 ) {
   await assertUserCanAct(senderId);
   await assertChatMember(senderId, input.chatId);
+  await assertAnonymousChatAllowed(input.chatId);
+  await assertNotAnonymousChat(input.chatId, "GIFs are disabled in anonymous mode for safety.");
   await assertGroupActionAllowed(input.chatId, senderId, "send");
   const familyMode = await getFamilyModeForUser(senderId);
   if (familyMode?.familyModeEnabled && familyMode.filterGifs) {
@@ -314,6 +396,8 @@ export async function sendStickerMessage(
 ) {
   await assertUserCanAct(senderId);
   await assertChatMember(senderId, input.chatId);
+  await assertAnonymousChatAllowed(input.chatId);
+  await assertNotAnonymousChat(input.chatId, "Stickers are disabled in anonymous mode for safety.");
   await assertGroupActionAllowed(input.chatId, senderId, "send");
   const familyMode = await getFamilyModeForUser(senderId);
   if (familyMode?.familyModeEnabled && familyMode.filterStickers) {
@@ -493,6 +577,7 @@ export async function deleteMessage(input: unknown, userId: string) {
 export async function addReaction(input: unknown, userId: string) {
   const data = reactionSchema.parse(input);
   await assertChatMember(userId, data.chatId);
+  await assertAnonymousChatAllowed(data.chatId);
   await assertGroupActionAllowed(data.chatId, userId, "react");
 
   await prisma.messageReaction.upsert({
@@ -520,6 +605,7 @@ export async function addReaction(input: unknown, userId: string) {
 export async function removeReaction(input: unknown, userId: string) {
   const data = reactionSchema.parse(input);
   await assertChatMember(userId, data.chatId);
+  await assertAnonymousChatAllowed(data.chatId);
   await assertGroupActionAllowed(data.chatId, userId, "react");
 
   await prisma.messageReaction.deleteMany({

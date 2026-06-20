@@ -12,8 +12,13 @@ type ReportItem = {
   createdAt: string;
   reporter: { displayName: string; username: string };
   reportedUser?: { id: string; displayName: string; username: string; status: string } | null;
+  chat?: { title: string | null; type: string } | null;
   message?: { type: string } | null;
   evidence?: {
+    safeModeStatus?: string;
+    safeModeAction?: string | null;
+    anonymousSafeRequest?: boolean;
+    requestStatus?: string;
     messageSnapshot?: {
       body?: string | null;
       type?: string;
@@ -21,8 +26,17 @@ type ReportItem = {
   } | null;
 };
 
+type DuplicateReviewItem = {
+  id: string;
+  attemptedUsername?: string | null;
+  reason: string;
+  status: string;
+  createdAt: string;
+};
+
 export function ModerationDashboard() {
   const [reports, setReports] = useState<ReportItem[]>([]);
+  const [duplicateReviews, setDuplicateReviews] = useState<DuplicateReviewItem[]>([]);
   const [reason, setReason] = useState("Unsafe behavior");
 
   async function loadReports() {
@@ -30,6 +44,12 @@ export function ModerationDashboard() {
     if (!response.ok) return;
     const data = await response.json();
     setReports(data.reports);
+
+    const duplicateResponse = await fetch("/api/admin/duplicate-reviews");
+    if (duplicateResponse.ok) {
+      const duplicateData = await duplicateResponse.json();
+      setDuplicateReviews(duplicateData.reviews);
+    }
   }
 
   async function review(reportId: string, status: "RESOLVED" | "REJECTED") {
@@ -91,17 +111,63 @@ export function ModerationDashboard() {
       </div>
 
       <div className="space-y-3">
+        {duplicateReviews.length > 0 ? (
+          <section className="rounded-lg border bg-card p-4">
+            <h2 className="font-semibold">Suspicious account reviews</h2>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Device fingerprint matches are privacy-safe and do not expose the existing account.
+            </p>
+            <div className="space-y-2">
+              {duplicateReviews.map((review) => (
+                <div className="rounded-md border bg-background p-3 text-sm" key={review.id}>
+                  <p className="font-medium">{review.reason}</p>
+                  <p className="text-muted-foreground">
+                    Attempted username: {review.attemptedUsername ?? "Unknown"} - {review.status}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {reports.map((report) => (
           <article className="rounded-lg border bg-card p-4" key={report.id}>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="space-y-2">
                 <div>
-                  <h2 className="font-semibold">{report.type} report</h2>
+                  <h2 className="font-semibold">
+                    {report.evidence?.anonymousSafeRequest
+                      ? "Anonymous Safe Request"
+                      : report.evidence?.safeModeStatus === "UNSAFE"
+                        ? "Unsafe conversation"
+                        : `${report.type} report`}
+                  </h2>
                   <p className="text-sm text-muted-foreground">
                     {report.reason} - {report.status}
                   </p>
                 </div>
                 <p className="text-sm">{report.details}</p>
+                {report.evidence?.safeModeStatus ? (
+                  <div className="rounded-md border bg-background p-3 text-sm">
+                    <p className="font-medium">Safe Mode: {report.evidence.safeModeStatus}</p>
+                    {report.evidence.safeModeAction ? (
+                      <p className="text-muted-foreground">Action: {report.evidence.safeModeAction}</p>
+                    ) : null}
+                    {report.chat ? (
+                      <p className="text-muted-foreground">
+                        Conversation: {report.chat.title ?? report.chat.type.toLowerCase()}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {report.evidence?.anonymousSafeRequest ? (
+                  <div className="rounded-md border bg-background p-3 text-sm">
+                    <p className="font-medium">Anonymous Safe Request</p>
+                    <p className="text-muted-foreground">
+                      Request status: {report.evidence.requestStatus ?? "reported"}
+                    </p>
+                  </div>
+                ) : null}
                 {report.message ? (
                   <div className="rounded-md border bg-background p-3 text-sm">
                     {report.evidence?.messageSnapshot?.body ??

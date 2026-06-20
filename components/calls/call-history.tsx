@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Phone, Video } from "lucide-react";
+import { AlertCircle, Loader2, Phone, PhoneMissed, Video } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type CallItem = {
   id: string;
@@ -9,48 +11,126 @@ type CallItem = {
   status: string;
   startedAt: string;
   durationSeconds: number | null;
-  chat: { title: string | null };
+  chat: { title: string | null; type?: string };
+  startedBy?: { displayName: string; username: string } | null;
+  participants: Array<{
+    userId: string;
+    status: string;
+    user: {
+      displayName: string;
+      username: string;
+    };
+  }>;
 };
 
 export function CallHistory() {
   const [calls, setCalls] = useState<CallItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/calls");
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error ?? "Could not load calls.");
+      }
+      setCalls(data.calls);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not load calls.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function load() {
-      const response = await fetch("/api/calls");
-      if (!response.ok) return;
-      const data = await response.json();
-      setCalls(data.calls);
-    }
-
     void load();
   }, []);
 
   return (
-    <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-10">
-      <div>
-        <h1 className="text-2xl font-semibold">Calls</h1>
-        <p className="text-sm text-muted-foreground">Your recent audio and video calls.</p>
+    <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-8 sm:py-10">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Calls</h1>
+          <p className="text-sm text-muted-foreground">Your recent audio and video calls.</p>
+        </div>
+        <Button variant="secondary" onClick={() => void load()}>
+          Refresh
+        </Button>
       </div>
 
-      <div className="space-y-3">
-        {calls.map((call) => (
-          <article className="flex items-center gap-3 rounded-lg border bg-card p-4" key={call.id}>
-            <div className="flex size-11 items-center justify-center rounded-lg bg-secondary">
-              {call.type === "VIDEO" ? <Video className="size-5" /> : <Phone className="size-5" />}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="truncate font-medium">{call.chat.title ?? "Call"}</h2>
-              <p className="text-sm text-muted-foreground">
-                {call.status} · {new Date(call.startedAt).toLocaleString()}
-              </p>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {call.durationSeconds ? `${Math.round(call.durationSeconds / 60)} min` : ""}
-            </p>
-          </article>
-        ))}
-      </div>
+      {loading ? (
+        <div className="flex min-h-60 items-center justify-center rounded-lg border bg-card">
+          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : error ? (
+        <div className="rounded-lg border border-destructive/30 bg-card p-6 text-center">
+          <AlertCircle className="mx-auto mb-3 size-7 text-destructive" />
+          <p className="font-medium">Could not load calls</p>
+          <p className="mt-1 text-sm text-muted-foreground">{error}</p>
+        </div>
+      ) : calls.length === 0 ? (
+        <div className="rounded-lg border border-dashed bg-card p-8 text-center">
+          <Phone className="mx-auto mb-3 size-7 text-muted-foreground" />
+          <p className="font-medium">No calls yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">Voice and video calls will appear here.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {calls.map((call) => (
+            <CallHistoryRow call={call} key={call.id} />
+          ))}
+        </div>
+      )}
     </main>
   );
+}
+
+function CallHistoryRow({ call }: { call: CallItem }) {
+  const missed = call.status === "MISSED" || call.participants.some((participant) => participant.status === "MISSED");
+  const rejected = call.status === "REJECTED";
+  const title = call.chat.title ?? call.startedBy?.displayName ?? "Call";
+
+  return (
+    <article className="flex items-center gap-3 rounded-lg border bg-card p-4">
+      <div
+        className={cn(
+          "flex size-11 shrink-0 items-center justify-center rounded-lg bg-secondary",
+          missed && "bg-destructive/10 text-destructive"
+        )}
+      >
+        {missed ? (
+          <PhoneMissed className="size-5" />
+        ) : call.type === "VIDEO" ? (
+          <Video className="size-5" />
+        ) : (
+          <Phone className="size-5" />
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <h2 className="truncate font-medium">{title}</h2>
+        <p className="text-sm text-muted-foreground">
+          {call.type === "VIDEO" ? "Video" : "Voice"} - {formatCallStatus(call.status)}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {new Date(call.startedAt).toLocaleString()}
+        </p>
+      </div>
+      <p className={cn("text-sm text-muted-foreground", (missed || rejected) && "text-destructive")}>
+        {missed ? "Missed" : rejected ? "Rejected" : formatDuration(call.durationSeconds)}
+      </p>
+    </article>
+  );
+}
+
+function formatCallStatus(status: string) {
+  return status.toLowerCase().replace(/_/g, " ");
+}
+
+function formatDuration(seconds: number | null) {
+  if (!seconds) return "";
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.round(seconds / 60)} min`;
 }
