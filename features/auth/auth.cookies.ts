@@ -5,6 +5,7 @@ export const accessCookieName = env.AUTH_COOKIE_NAME;
 export const refreshCookieName = `${env.AUTH_COOKIE_NAME}.refresh`;
 
 const isProduction = process.env.NODE_ENV === "production";
+const refreshCookiePath = "/";
 
 export async function setAuthCookies(input: {
   accessToken: string;
@@ -13,6 +14,14 @@ export async function setAuthCookies(input: {
   refreshTokenMaxAgeSeconds: number;
 }) {
   const cookieStore = await cookies();
+
+  cookieStore.set(refreshCookieName, "", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "strict",
+    path: "/api/auth",
+    maxAge: 0
+  });
 
   cookieStore.set(accessCookieName, input.accessToken, {
     httpOnly: true,
@@ -26,7 +35,7 @@ export async function setAuthCookies(input: {
     httpOnly: true,
     secure: isProduction,
     sameSite: "strict",
-    path: "/api/auth",
+    path: refreshCookiePath,
     maxAge: input.refreshTokenMaxAgeSeconds
   });
 }
@@ -38,6 +47,13 @@ export async function clearAuthCookies() {
     secure: isProduction,
     sameSite: "strict",
     path: "/",
+    maxAge: 0
+  });
+  cookieStore.set(refreshCookieName, "", {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "strict",
+    path: refreshCookiePath,
     maxAge: 0
   });
   cookieStore.set(refreshCookieName, "", {

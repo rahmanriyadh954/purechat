@@ -176,7 +176,12 @@ export function useRealtimeMessaging() {
 
     const socket = io({
       path: process.env.NEXT_PUBLIC_SOCKET_IO_PATH ?? "/api/socket",
-      withCredentials: true
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 5000,
+      timeout: 8000
     });
 
     socketRef.current = socket;
@@ -253,7 +258,8 @@ export function useRealtimeMessaging() {
   function appendMessage(message: RealtimeMessage) {
     setMessagesByChat((current) => {
       const existing = current[message.chatId] ?? [];
-      if (existing.some((item) => item.id === message.id)) return current;
+      const clientId = getClientId(message);
+      if (existing.some((item) => item.id === message.id || (clientId && getClientId(item) === clientId))) return current;
 
       return {
         ...current,
@@ -265,11 +271,65 @@ export function useRealtimeMessaging() {
   function replaceMessage(message: RealtimeMessage) {
     setMessagesByChat((current) => ({
       ...current,
-      [message.chatId]: (current[message.chatId] ?? []).map((item) =>
-        item.id === message.id ? message : item
-      )
+      [message.chatId]: (current[message.chatId] ?? []).map((item) => {
+        const incomingClientId = getClientId(message);
+        if (item.id === message.id || (incomingClientId && getClientId(item) === incomingClientId)) {
+          return message;
+        }
+        return item;
+      })
     }));
     updateChatPreview(message);
+  }
+
+  function markOptimisticFailed(chatId: string, clientId: string, error: string) {
+    setMessagesByChat((current) => ({
+      ...current,
+      [chatId]: (current[chatId] ?? []).map((message) =>
+        getClientId(message) === clientId
+          ? {
+              ...message,
+              status: "FAILED",
+              metadata: {
+                ...(message.metadata ?? {}),
+                failed: true,
+                error
+              }
+            }
+          : message
+      )
+    }));
+  }
+
+  function createOptimisticMessage(chatId: string, body: string, clientId: string): RealtimeMessage {
+    return {
+      id: `local-${clientId}`,
+      chatId,
+      senderId: currentUser?.id,
+      body,
+      status: "SENT",
+      metadata: {
+        clientId,
+        optimistic: true
+      },
+      createdAt: new Date().toISOString(),
+      sender: currentUser
+        ? {
+            id: currentUser.id,
+            displayName: currentUser.displayName,
+            username: currentUser.username
+          }
+        : null,
+      reactions: [],
+      attachments: [],
+      readReceipts: currentUser
+        ? [{
+            userId: currentUser.id,
+            deliveredAt: new Date().toISOString(),
+            readAt: new Date().toISOString()
+          }]
+        : []
+    };
   }
 
   function updateChatPreview(message: RealtimeMessage, incrementUnread = false) {
@@ -321,7 +381,7 @@ export function useRealtimeMessaging() {
     return new Promise<T>((resolve, reject) => {
       const socket = socketRef.current;
       if (!socket?.connected) {
-        reject(new Error("Chat connection is offline."));
+        reject(new Error("Chat connection is still reconnecting."));
         return;
       }
 
@@ -339,19 +399,70 @@ export function useRealtimeMessaging() {
     });
   }, []);
 
-  const sendMessage = useCallback(async (chatId: string, body: string) => {
+  const sendViaApi = useCallback(async (chatId: string, body: string, clientId: string) => {
+    const response = await fetch(`/api/chats/${chatId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body, clientId })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error ?? "Could not send message.");
+    }
+
+    return data.message as RealtimeMessage;
+  }, []);
+
+  const sendMessage = useCallback(async (chatId: string, body: string, options?: { clientId?: string; optimistic?: boolean }) => {
     const trimmed = body.trim();
     if (!trimmed) throw new Error("Message cannot be empty.");
+    const clientId = options?.clientId ?? crypto.randomUUID();
 
-    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageSend, {
-      chatId,
-      body: trimmed,
-      clientId: crypto.randomUUID()
-    });
+    if (options?.optimistic !== false) {
+      const optimistic = createOptimisticMessage(chatId, trimmed, clientId);
+      appendMessage(optimistic);
+      updateChatPreview(optimistic);
+    }
 
-    appendMessage(result.message);
-    updateChatPreview(result.message);
-  }, [emitWithAck]);
+    try {
+      let message: RealtimeMessage;
+      const socketReady = socketRef.current?.connected;
+
+      if (socketReady) {
+        const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageSend, {
+          chatId,
+          body: trimmed,
+          clientId
+        });
+        message = result.message;
+      } else {
+        message = await sendViaApi(chatId, trimmed, clientId);
+      }
+
+      replaceMessage(message);
+      void refreshChats();
+      return message;
+    } catch (error) {
+      try {
+        const message = await sendViaApi(chatId, trimmed, clientId);
+        replaceMessage(message);
+        void refreshChats();
+        return message;
+      } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : "Could not send message.";
+        markOptimisticFailed(chatId, clientId, message);
+        throw fallbackError;
+      }
+    }
+  }, [emitWithAck, currentUser, sendViaApi, refreshChats]);
+
+  const retryMessage = useCallback(async (chatId: string, messageId: string) => {
+    const message = messagesByChat[chatId]?.find((item) => item.id === messageId);
+    if (!message?.body?.trim()) throw new Error("Message cannot be retried.");
+    const clientId = getClientId(message) ?? crypto.randomUUID();
+    return sendMessage(chatId, message.body, { clientId, optimistic: false });
+  }, [messagesByChat, sendMessage]);
 
   const markRead = useCallback((chatId: string, messageId: string) => {
     socketRef.current?.emit(socketEvents.messageRead, { chatId, messageId });
@@ -373,18 +484,71 @@ export function useRealtimeMessaging() {
   const editMessage = useCallback(async (chatId: string, messageId: string, body: string) => {
     const trimmed = body.trim();
     if (!trimmed) throw new Error("Message cannot be empty.");
-    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageEdit, { chatId, messageId, body: trimmed });
-    replaceMessage(result.message);
+    try {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageEdit, { chatId, messageId, body: trimmed });
+      replaceMessage(result.message);
+      return result.message;
+    } catch {
+      const response = await fetch(`/api/chats/${chatId}/messages/${messageId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: trimmed })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not edit message.");
+      replaceMessage(data.message);
+      return data.message as RealtimeMessage;
+    }
   }, [emitWithAck]);
 
   const deleteMessage = useCallback(async (chatId: string, messageId: string) => {
-    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageDelete, { chatId, messageId });
-    replaceMessage(result.message);
+    try {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.messageDelete, { chatId, messageId });
+      replaceMessage(result.message);
+      return result.message;
+    } catch {
+      const response = await fetch(`/api/chats/${chatId}/messages/${messageId}`, {
+        method: "DELETE"
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not delete message.");
+      replaceMessage(data.message);
+      return data.message as RealtimeMessage;
+    }
   }, [emitWithAck]);
 
   const addReaction = useCallback(async (chatId: string, messageId: string, emoji: string) => {
-    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.reactionAdd, { chatId, messageId, emoji });
-    replaceMessage(result.message);
+    try {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.reactionAdd, { chatId, messageId, emoji });
+      replaceMessage(result.message);
+      return result.message;
+    } catch {
+      const response = await fetch(`/api/chats/${chatId}/messages/${messageId}/reactions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emoji })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not react to message.");
+      replaceMessage(data.message);
+      return data.message as RealtimeMessage;
+    }
+  }, [emitWithAck]);
+
+  const removeReaction = useCallback(async (chatId: string, messageId: string, emoji: string) => {
+    try {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.reactionRemove, { chatId, messageId, emoji });
+      replaceMessage(result.message);
+      return result.message;
+    } catch {
+      const response = await fetch(`/api/chats/${chatId}/messages/${messageId}/reactions?emoji=${encodeURIComponent(emoji)}`, {
+        method: "DELETE"
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not remove reaction.");
+      replaceMessage(data.message);
+      return data.message as RealtimeMessage;
+    }
   }, [emitWithAck]);
 
   const sendAttachment = useCallback(
@@ -455,6 +619,21 @@ export function useRealtimeMessaging() {
     setChats((current) => current.filter((chat) => chat.id !== chatId));
   }, []);
 
+  const upsertChat = useCallback((chat: RealtimeChat) => {
+    setChats((current) => {
+      const exists = current.some((item) => item.id === chat.id);
+      const next = exists
+        ? current.map((item) => (item.id === chat.id ? chat : item))
+        : [chat, ...current];
+
+      return next.sort((a, b) => {
+        const aTime = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const bTime = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return bTime - aTime;
+      });
+    });
+  }, []);
+
   return {
     currentUser,
     chats,
@@ -469,17 +648,28 @@ export function useRealtimeMessaging() {
     refreshChats,
     loadMessages,
     sendMessage,
+    retryMessage,
     markRead,
     startTyping,
     stopTyping,
     editMessage,
     deleteMessage,
     addReaction,
+    removeReaction,
     sendAttachment,
     sendGif,
     sendSticker,
-    hideChat
+    hideChat,
+    upsertChat
   };
+}
+
+function getClientId(message: RealtimeMessage) {
+  const metadata = message.metadata && typeof message.metadata === "object"
+    ? message.metadata
+    : null;
+  const clientId = metadata?.clientId;
+  return typeof clientId === "string" ? clientId : null;
 }
 
 function getMessagePreview(message: RealtimeMessage) {

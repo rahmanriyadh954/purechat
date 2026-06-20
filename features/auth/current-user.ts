@@ -1,9 +1,13 @@
-import { getAccessTokenCookie } from "./auth.cookies";
-import { getSessionFromAccessToken } from "./auth.service";
+import { getAccessTokenCookie, getRefreshTokenCookie } from "./auth.cookies";
+import { getSessionFromAccessToken, getSessionFromRefreshToken } from "./auth.service";
 
 export async function getCurrentSession() {
   const accessToken = await getAccessTokenCookie();
-  return getSessionFromAccessToken(accessToken);
+  const session = await getSessionFromAccessToken(accessToken);
+
+  if (session) return session;
+
+  return getSessionFromRefreshToken(await getRefreshTokenCookie());
 }
 
 export async function requireCurrentSession() {

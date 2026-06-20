@@ -179,6 +179,24 @@ export async function sendTextMessage(input: unknown, senderId: string) {
   await assertChatMember(senderId, data.chatId);
   await assertAnonymousChatAllowed(data.chatId);
   await assertGroupActionAllowed(data.chatId, senderId, "send");
+  if (data.clientId) {
+    const existingMessage = await prisma.message.findFirst({
+      where: {
+        chatId: data.chatId,
+        senderId,
+        metadata: {
+          path: ["clientId"],
+          equals: data.clientId
+        }
+      },
+      include: messageInclude
+    });
+
+    if (existingMessage) {
+      return existingMessage;
+    }
+  }
+
   const familyMode = await getFamilyModeForUser(senderId);
   const safety = evaluateTextSafety(data.body, Boolean(familyMode?.familyModeEnabled));
   if (!safety.allowed) {
@@ -580,6 +598,19 @@ export async function addReaction(input: unknown, userId: string) {
   await assertAnonymousChatAllowed(data.chatId);
   await assertGroupActionAllowed(data.chatId, userId, "react");
 
+  const targetMessage = await prisma.message.findFirst({
+    where: {
+      id: data.messageId,
+      chatId: data.chatId,
+      deletedAt: null
+    },
+    select: { id: true }
+  });
+
+  if (!targetMessage) {
+    throw new Error("Message cannot be reacted to.");
+  }
+
   await prisma.messageReaction.upsert({
     where: {
       messageId_userId_emoji: {
@@ -607,6 +638,19 @@ export async function removeReaction(input: unknown, userId: string) {
   await assertChatMember(userId, data.chatId);
   await assertAnonymousChatAllowed(data.chatId);
   await assertGroupActionAllowed(data.chatId, userId, "react");
+
+  const targetMessage = await prisma.message.findFirst({
+    where: {
+      id: data.messageId,
+      chatId: data.chatId,
+      deletedAt: null
+    },
+    select: { id: true }
+  });
+
+  if (!targetMessage) {
+    throw new Error("Message cannot be updated.");
+  }
 
   await prisma.messageReaction.deleteMany({
     where: {

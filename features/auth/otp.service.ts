@@ -35,7 +35,7 @@ export async function createOtpChallenge(input: {
     }
   });
 
-  await deliverOtpCode({
+  const delivery = await deliverOtpCode({
     identifier: normalizedIdentifier,
     code,
     purpose: input.purpose
@@ -43,6 +43,7 @@ export async function createOtpChallenge(input: {
 
   return {
     code,
+    delivery,
     expiresInMinutes: OTP_TTL_MINUTES
   };
 }

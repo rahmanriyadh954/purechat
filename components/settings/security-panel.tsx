@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { getSoundSettings, saveSoundSettings, useSoundSystem } from "@/hooks/use-sound-system";
 
 type SessionItem = {
@@ -20,43 +21,82 @@ type SessionItem = {
   } | null;
 };
 
+type BlockedUserItem = {
+  id: string;
+  createdAt: string;
+  user: {
+    id: string;
+    displayName: string;
+    username: string;
+    avatarUrl?: string | null;
+  };
+};
+
 export function SecurityPanel() {
   const router = useRouter();
   const sounds = useSoundSystem();
+  const { toast } = useToast();
   const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [blockedUsers, setBlockedUsers] = useState<BlockedUserItem[]>([]);
   const [soundSettings, setSoundSettings] = useState(getSoundSettings());
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "" });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [loggingOutAll, setLoggingOutAll] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
 
   async function loadSessions() {
     setError("");
-    const response = await fetch("/api/auth/sessions");
+    setLoadingSessions(true);
+    try {
+      const response = await fetch("/api/auth/sessions");
 
-    if (!response.ok) {
-      setError("Please sign in to view your devices.");
-      return;
+      if (!response.ok) {
+        router.replace("/auth/login");
+        router.refresh();
+        return;
+      }
+
+      const data = await response.json();
+      setSessions(data.sessions);
+    } finally {
+      setLoadingSessions(false);
     }
+  }
 
+  async function loadBlockedUsers() {
+    const response = await fetch("/api/users/me/blocked");
+    if (!response.ok) return;
     const data = await response.json();
-    setSessions(data.sessions);
+    setBlockedUsers(data.blockedUsers ?? []);
   }
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/auth/login");
+    setLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      router.replace("/auth/login");
+      router.refresh();
+    }
   }
 
   async function logoutAll() {
+    setLoggingOutAll(true);
     const response = await fetch("/api/auth/logout-all", { method: "POST" });
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       setError(data.error ?? "Could not sign out from all devices.");
+      setLoggingOutAll(false);
       return;
     }
 
     setMessage("You are signed out from all devices.");
-    router.push("/auth/login");
+    router.replace("/auth/login");
+    router.refresh();
   }
 
   async function revokeSession(sessionId: string) {
@@ -87,6 +127,36 @@ export function SecurityPanel() {
     }
 
     setMessage(data.message);
+    toast({ kind: "success", title: data.message });
+  }
+
+  async function changePassword() {
+    setSavingPassword(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/auth/password", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(passwordForm)
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Could not update password.");
+      }
+
+      setPasswordForm({ currentPassword: "", newPassword: "" });
+      setMessage("Password updated.");
+      toast({ kind: "success", title: "Password updated" });
+    } catch (error) {
+      const description = error instanceof Error ? error.message : "Please try again.";
+      setError(description);
+      toast({ kind: "error", title: "Password not updated", description });
+    } finally {
+      setSavingPassword(false);
+    }
   }
 
   async function setFamilyMode(enabled: boolean) {
@@ -115,6 +185,7 @@ export function SecurityPanel() {
 
   useEffect(() => {
     void loadSessions();
+    void loadBlockedUsers();
     setSoundSettings(getSoundSettings());
   }, []);
 
@@ -123,6 +194,7 @@ export function SecurityPanel() {
     setSoundSettings(next);
     saveSoundSettings(next);
     if (!next.muted) sounds.play("tap");
+    toast({ kind: "success", title: "Sound setting saved" });
   }
 
   return (
@@ -135,9 +207,38 @@ export function SecurityPanel() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Button onClick={logout}>Sign out</Button>
-        <Button variant="secondary" onClick={logoutAll}>
-          Sign out everywhere
+        <Button disabled={loggingOut} onClick={logout}>
+          {loggingOut ? "Logging out..." : "Logout"}
+        </Button>
+        <Button disabled={loggingOutAll} variant="secondary" onClick={logoutAll}>
+          {loggingOutAll ? "Logging out..." : "Logout from all devices"}
+        </Button>
+      </div>
+
+      <div className="rounded-lg border bg-card p-4">
+        <h2 className="mb-4 font-medium">Change password</h2>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium">Current password</span>
+            <input
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              type="password"
+              value={passwordForm.currentPassword}
+              onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })}
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium">New password</span>
+            <input
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+              type="password"
+              value={passwordForm.newPassword}
+              onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })}
+            />
+          </label>
+        </div>
+        <Button className="mt-4" disabled={savingPassword || !passwordForm.currentPassword || !passwordForm.newPassword} onClick={changePassword}>
+          {savingPassword ? "Updating..." : "Change password"}
         </Button>
       </div>
 
@@ -157,6 +258,30 @@ export function SecurityPanel() {
               Turn off
             </Button>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-card p-4" id="blocked-users">
+        <h2 className="font-medium">Blocked users</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          People you block cannot contact you directly.
+        </p>
+        <div className="mt-4 space-y-2">
+          {blockedUsers.length === 0 ? (
+            <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+              No blocked users.
+            </p>
+          ) : blockedUsers.map((item) => (
+            <div className="flex items-center justify-between rounded-md border bg-background p-3 text-sm" key={item.id}>
+              <div>
+                <p className="font-medium">{item.user.displayName}</p>
+                <p className="text-muted-foreground">@{item.user.username}</p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {new Date(item.createdAt).toLocaleDateString()}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -199,7 +324,15 @@ export function SecurityPanel() {
       {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
 
       <div className="space-y-3">
-        {sessions.map((session) => (
+        {loadingSessions ? (
+          <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+            Checking your sessions...
+          </div>
+        ) : sessions.length === 0 ? (
+          <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+            No active sessions found.
+          </div>
+        ) : sessions.map((session) => (
           <article key={session.id} className="rounded-lg border bg-card p-4">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -210,7 +343,7 @@ export function SecurityPanel() {
                   ) : null}
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  {session.device?.type ?? "WEB"} · {session.ipAddress ?? "Unknown IP"}
+                  {session.device?.type ?? "WEB"} - {session.ipAddress ?? "Unknown IP"}
                 </p>
               </div>
               <p className="text-right text-xs text-muted-foreground">

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const protectedPrefixes = ["/chats", "/calls", "/settings", "/admin", "/groups", "/join"];
+const protectedPrefixes = ["/chats", "/calls", "/settings", "/profile", "/admin", "/groups", "/join"];
 const accessCookieName = process.env.AUTH_COOKIE_NAME ?? "purechat.session";
+const refreshCookieName = `${accessCookieName}.refresh`;
 const unsafeMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export function middleware(request: NextRequest) {
@@ -30,8 +31,9 @@ export function middleware(request: NextRequest) {
   }
 
   const hasAccessCookie = Boolean(request.cookies.get(accessCookieName)?.value);
+  const hasRefreshCookie = Boolean(request.cookies.get(refreshCookieName)?.value);
 
-  if (!hasAccessCookie) {
+  if (!hasAccessCookie && !hasRefreshCookie) {
     const loginUrl = new URL("/auth/login", request.url);
     loginUrl.searchParams.set("next", request.nextUrl.pathname);
     return NextResponse.redirect(loginUrl);
@@ -41,5 +43,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/chats/:path*", "/calls/:path*", "/settings/:path*", "/admin/:path*", "/groups/:path*", "/join/:path*"]
+  matcher: ["/api/:path*", "/chats/:path*", "/calls/:path*", "/settings/:path*", "/profile/:path*", "/admin/:path*", "/groups/:path*", "/join/:path*"]
 };

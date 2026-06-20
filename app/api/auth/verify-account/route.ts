@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { setAuthCookies } from "@/features/auth/auth.cookies";
 import { verifyAccountOtp } from "@/features/auth/auth.service";
 import { otpVerifySchema } from "@/features/auth/auth.validators";
 import { apiError, readValidatedJson } from "@/server/security/api";
@@ -14,14 +15,21 @@ export async function POST(request: NextRequest) {
 
   if (!limit.allowed) {
     return NextResponse.json(
-      { error: "Too many tries. Please wait a little." },
+      {
+        error: "Too many tries. Please wait a little.",
+        retryAfter: limit.retryAfter
+      },
       { status: 429, headers: { "Retry-After": String(limit.retryAfter) } }
     );
   }
 
   try {
     const body = await readValidatedJson(request, otpVerifySchema);
-    await verifyAccountOtp(body);
+    const session = await verifyAccountOtp(body, {
+      ipAddress,
+      userAgent: request.headers.get("user-agent") ?? undefined
+    });
+    await setAuthCookies(session);
     return NextResponse.json({ ok: true, message: "Account verified." });
   } catch (error) {
     return apiError(error);

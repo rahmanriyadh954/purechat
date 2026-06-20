@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireCurrentSession } from "@/features/auth/current-user";
 import { presentChat } from "@/features/chats/chat.presenters";
+import { createDirectChat } from "@/features/chats/chat.service";
 import { createAnonymousConversation } from "@/features/anonymous/anonymous.service";
 import { createAnonymousConversationSchema } from "@/features/anonymous/anonymous.validators";
 import { createGroup } from "@/features/groups/group.service";
@@ -120,6 +121,14 @@ export async function POST(request: NextRequest) {
       const chat = await createAnonymousConversation(body, session.userId);
 
       return NextResponse.json({ chat }, { status: 201 });
+    }
+
+    if (rawBody?.mode === "direct") {
+      const chat = await createDirectChat(rawBody, session.userId);
+
+      return NextResponse.json({
+        chat: presentChat(chat, session.userId)
+      }, { status: 201 });
     }
 
     const body = createGroupSchema.parse(rawBody);

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
+import type { Route } from "next";
 import {
   AlertCircle,
   ArrowLeft,
@@ -13,7 +14,6 @@ import {
   Image as ImageIcon,
   Inbox,
   Loader2,
-  Menu,
   MessageCircle,
   Mic,
   MoreHorizontal,
@@ -23,9 +23,11 @@ import {
   Plus,
   Search,
   SendHorizontal,
+  Settings,
   ShieldCheck,
   Smile,
   Sticker,
+  UserCircle,
   Users,
   Video,
   X
@@ -36,7 +38,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { CallOverlay } from "@/components/calls/call-overlay";
 import { GroupDetailsPanel } from "@/components/groups/group-details-panel";
-import { useRealtimeMessaging, type RealtimeMessage } from "@/hooks/use-realtime-messaging";
+import { AccountMenu, AppRail, MobileBottomNavigation } from "@/components/navigation/app-navigation";
+import { useRealtimeMessaging, type RealtimeChat, type RealtimeMessage } from "@/hooks/use-realtime-messaging";
 import { useSoundSystem } from "@/hooks/use-sound-system";
 import { useWebRtcCalls } from "@/hooks/use-webrtc-calls";
 import { cn } from "@/lib/utils";
@@ -75,7 +78,9 @@ type Message = {
   author?: string;
   text: string;
   time: string;
-  status?: "sent" | "read";
+  status?: "sent" | "read" | "failed" | "sending";
+  failed?: boolean;
+  error?: string;
   edited?: boolean;
   deleted?: boolean;
   pendingApproval?: boolean;
@@ -104,6 +109,7 @@ export function MessengerShell() {
   const [groupDetailsOpen, setGroupDetailsOpen] = useState(false);
   const [callModal, setCallModal] = useState<{ title: string; description: string } | null>(null);
   const [safeModeOpen, setSafeModeOpen] = useState(false);
+  const [newChatOpen, setNewChatOpen] = useState(false);
   const [anonymousStartOpen, setAnonymousStartOpen] = useState(false);
   const [anonymousByChat, setAnonymousByChat] = useState<Record<string, NonNullable<Chat["anonymous"]>>>({});
   const [safetyByChat, setSafetyByChat] = useState<Record<string, Chat["safetyStatus"]>>({});
@@ -179,6 +185,17 @@ export function MessengerShell() {
     if (!activeChat?.id) return;
     void realtime.loadMessages(activeChat.id);
   }, [activeChat?.id, realtime.loadMessages]);
+
+  useEffect(() => {
+    if (!activeChat?.id || realtime.connected) return;
+
+    const timer = window.setInterval(() => {
+      void realtime.loadMessages(activeChat.id);
+      void realtime.refreshChats();
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [activeChat?.id, realtime.connected, realtime.loadMessages, realtime.refreshChats]);
 
   useEffect(() => {
     if (!activeChat?.id) return;
@@ -264,7 +281,7 @@ export function MessengerShell() {
   return (
     <main className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.16),transparent_32%),radial-gradient(circle_at_bottom_right,hsl(var(--accent)/0.14),transparent_34%),hsl(var(--background))] text-foreground">
       <div className="flex h-full p-0 md:p-3">
-        <Rail />
+        <AppRail />
 
         <section
           className={cn(
@@ -272,7 +289,7 @@ export function MessengerShell() {
             mobileChatOpen && "hidden md:flex"
           )}
         >
-          <ChatListHeader onStartAnonymous={() => setAnonymousStartOpen(true)} />
+          <ChatListHeader onStartChat={() => setNewChatOpen(true)} />
           <SearchBox value={query} onChange={setQuery} />
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 [scrollbar-width:thin]">
@@ -380,15 +397,7 @@ export function MessengerShell() {
                             message={message}
                             onReact={async (emoji) => {
                               if (!message.originalId) return;
-                              try {
-                                await realtime.addReaction(activeChat.id, message.originalId, emoji);
-                              } catch (error) {
-                                toast({
-                                  kind: "error",
-                                  title: "Reaction failed",
-                                  description: getErrorMessage(error)
-                                });
-                              }
+                              await realtime.addReaction(activeChat.id, message.originalId, emoji);
                             }}
                             onEdit={async (body) => {
                               if (!message.originalId) return;
@@ -396,29 +405,11 @@ export function MessengerShell() {
                             }}
                             onDelete={async () => {
                               if (!message.originalId) return;
-                              try {
-                                await realtime.deleteMessage(activeChat.id, message.originalId);
-                                toast({ kind: "success", title: "Message deleted" });
-                              } catch (error) {
-                                toast({
-                                  kind: "error",
-                                  title: "Delete failed",
-                                  description: getErrorMessage(error)
-                                });
-                              }
+                              await realtime.deleteMessage(activeChat.id, message.originalId);
                             }}
-                            onReport={async () => {
+                            onReport={async (reason, details) => {
                               if (!message.originalId) return;
-                              try {
-                                await reportMessage(activeChat.id, message);
-                                toast({ kind: "success", title: "Report sent" });
-                              } catch (error) {
-                                toast({
-                                  kind: "error",
-                                  title: "Report failed",
-                                  description: getErrorMessage(error)
-                                });
-                              }
+                              await reportMessage(activeChat.id, message, reason, details);
                             }}
                             onApprove={async (approved) => {
                               if (!message.originalId) return;
@@ -436,6 +427,10 @@ export function MessengerShell() {
                                   description: getErrorMessage(error)
                                 });
                               }
+                            }}
+                            onRetry={async () => {
+                              if (!message.originalId) return;
+                              await realtime.retryMessage(activeChat.id, message.originalId);
                             }}
                           />
                         ))}
@@ -515,43 +510,28 @@ export function MessengerShell() {
           }}
         />
       ) : null}
+      {newChatOpen ? (
+        <NewChatModal
+          onClose={() => setNewChatOpen(false)}
+          onStartAnonymous={() => {
+            setNewChatOpen(false);
+            setAnonymousStartOpen(true);
+          }}
+          onCreated={async (chat) => {
+            realtime.upsertChat(chat);
+            setActiveChatId(chat.id);
+            setMobileChatOpen(true);
+            setNewChatOpen(false);
+            await realtime.loadMessages(chat.id);
+            void realtime.refreshChats();
+            toast({ kind: "success", title: "Chat started" });
+          }}
+        />
+      ) : null}
+      <div className={mobileChatOpen ? "hidden md:block" : undefined}>
+        <MobileBottomNavigation />
+      </div>
     </main>
-  );
-}
-
-function Rail() {
-  const { toast } = useToast();
-  const comingSoon = (title: string) => {
-    toast({
-      kind: "info",
-      title: "Coming soon",
-      description: `${title} will be available in PureChat soon.`
-    });
-  };
-
-  return (
-    <aside className="mr-3 hidden w-20 shrink-0 rounded-2xl border border-white/20 bg-card/72 shadow-2xl shadow-black/5 backdrop-blur-2xl md:flex md:flex-col md:items-center md:gap-3 md:px-3 md:py-4">
-      <div className="mb-2 flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20">
-        <MessageCircle className="size-5" />
-      </div>
-      <Button variant="secondary" size="icon" aria-label="Chats">
-        <MessageCircle className="size-5" />
-      </Button>
-      <Button variant="ghost" size="icon" aria-label="Groups" onClick={() => comingSoon("Groups shortcut")}>
-        <Users className="size-5" />
-      </Button>
-      <Button asChild variant="ghost" size="icon" aria-label="Calls">
-        <Link href="/calls">
-          <Phone className="size-5" />
-        </Link>
-      </Button>
-      <Button variant="ghost" size="icon" aria-label="Notifications" onClick={() => comingSoon("Notifications")}>
-        <Bell className="size-5" />
-      </Button>
-      <div className="mt-auto rounded-full border bg-background/70 p-1 shadow-sm">
-        <ThemeToggle />
-      </div>
-    </aside>
   );
 }
 
@@ -1084,9 +1064,7 @@ function MessageState({
   );
 }
 
-function ChatListHeader({ onStartAnonymous }: { onStartAnonymous: () => void }) {
-  const { toast } = useToast();
-
+function ChatListHeader({ onStartChat }: { onStartChat: () => void }) {
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-white/20 px-4">
       <div>
@@ -1097,25 +1075,190 @@ function ChatListHeader({ onStartAnonymous }: { onStartAnonymous: () => void }) 
         <div className="md:hidden">
           <ThemeToggle />
         </div>
-        <Button variant="secondary" size="icon" aria-label="Start anonymous safe request" onClick={onStartAnonymous}>
+        <Button variant="secondary" size="icon" aria-label="Start new chat" onClick={onStartChat}>
           <Plus className="size-5" />
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Open menu"
-          onClick={() =>
-            toast({
-              kind: "info",
-              title: "Coming soon",
-              description: "Chat settings will be available soon."
-            })
-          }
-        >
-          <Menu className="size-5" />
-        </Button>
+        <AccountMenu />
       </div>
     </header>
+  );
+}
+
+type UserSearchResult = {
+  id: string;
+  displayName: string;
+  username: string;
+  avatarUrl?: string | null;
+};
+
+function NewChatModal({
+  onClose,
+  onCreated,
+  onStartAnonymous
+}: {
+  onClose: () => void;
+  onCreated: (chat: RealtimeChat) => Promise<void>;
+  onStartAnonymous: () => void;
+}) {
+  const { toast } = useToast();
+  const [query, setQuery] = useState("");
+  const [users, setUsers] = useState<UserSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [startingUserId, setStartingUserId] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    setError("");
+
+    if (trimmed.length < 2) {
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      try {
+        const response = await fetch(`/api/users/search?q=${encodeURIComponent(trimmed)}`, {
+          signal: controller.signal
+        });
+        const data = await response.json();
+
+        if (!response.ok) throw new Error(data.error ?? "Could not search users.");
+
+        setUsers(data.users ?? []);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setError(error instanceof Error ? error.message : "Could not search users.");
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
+
+  async function startChat(userId: string) {
+    setStartingUserId(userId);
+    setError("");
+
+    try {
+      const response = await fetch("/api/chats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "direct", userId })
+      });
+      const data = await response.json();
+
+      if (!response.ok) throw new Error(data.error ?? "Could not start chat.");
+
+      await onCreated(data.chat);
+    } catch (error) {
+      const description = error instanceof Error ? error.message : "Could not start chat.";
+      setError(description);
+      toast({ kind: "error", title: "Chat not started", description });
+    } finally {
+      setStartingUserId("");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-md">
+      <div
+        className="w-full max-w-lg rounded-2xl border border-white/25 bg-card/95 p-5 shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-chat-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold" id="new-chat-title">New chat</h2>
+            <p className="text-sm text-muted-foreground">Search by username, email, or phone.</p>
+          </div>
+          <Button variant="ghost" size="icon" aria-label="Close new chat" onClick={onClose}>
+            <X className="size-5" />
+          </Button>
+        </div>
+
+        <label className="mt-4 flex h-12 items-center gap-2 rounded-2xl border bg-background px-4 text-sm">
+          <Search className="size-4 text-muted-foreground" />
+          <input
+            autoFocus
+            className="w-full bg-transparent outline-none"
+            placeholder="Search people"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+
+        <div className="mt-4">
+          <Button className="w-full justify-start gap-2" variant="secondary" onClick={onStartAnonymous}>
+            <ShieldCheck className="size-4" />
+            Start Anonymous Safe Request
+          </Button>
+        </div>
+
+        <div className="mt-4 max-h-80 overflow-y-auto">
+          {loading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, index) => (
+                <div className="flex items-center gap-3 rounded-lg border bg-background p-3" key={index}>
+                  <Skeleton className="size-10 rounded-full" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-3 w-24" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : error ? (
+            <p className="rounded-lg border border-destructive/30 bg-background p-4 text-sm text-destructive">{error}</p>
+          ) : query.trim().length < 2 ? (
+            <p className="rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
+              Type at least 2 characters to search.
+            </p>
+          ) : users.length === 0 ? (
+            <p className="rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
+              No matching user found.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {users.map((user) => (
+                <button
+                  className="flex w-full items-center gap-3 rounded-lg border bg-background p-3 text-left transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                  key={user.id}
+                  type="button"
+                  disabled={Boolean(startingUserId)}
+                  onClick={() => void startChat(user.id)}
+                >
+                  <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {user.avatarUrl ? <img className="size-full object-cover" src={user.avatarUrl} alt="" /> : user.displayName.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{user.displayName}</p>
+                    <p className="truncate text-sm text-muted-foreground">@{user.username}</p>
+                  </div>
+                  <span className="text-sm text-primary">
+                    {startingUserId === user.id ? "Starting..." : "Start"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1338,26 +1481,99 @@ function MessageBubble({
   onEdit,
   onDelete,
   onReport,
-  onApprove
+  onApprove,
+  onRetry
 }: {
   message: Message;
   onReact: (emoji: string) => Promise<void>;
   onEdit: (body: string) => Promise<void>;
   onDelete: () => Promise<void>;
-  onReport: () => Promise<void>;
+  onReport: (reason: string, details?: string) => Promise<void>;
   onApprove: (approved: boolean) => Promise<void>;
+  onRetry: () => Promise<unknown>;
 }) {
   const isMine = message.sender === "me";
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.text);
   const [busy, setBusy] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [reactionOpen, setReactionOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const longPressTimer = useRef<number | null>(null);
   const { toast } = useToast();
+  const canManage = isMine && !message.deleted && !message.failed;
+  const canReport = !isMine && !message.deleted && !message.failed;
+
+  function clearLongPressTimer() {
+    if (longPressTimer.current) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }
+
+  function openActions() {
+    if (message.deleted || message.failed) return;
+    setActionsOpen(true);
+    setReactionOpen(false);
+    setDeleteOpen(false);
+  }
+
+  async function react(emoji: string) {
+    setBusy(true);
+    try {
+      await onReact(emoji);
+      setReactionOpen(false);
+      setActionsOpen(false);
+      toast({ kind: "success", title: "Reaction added" });
+    } catch (error) {
+      toast({
+        kind: "error",
+        title: "Reaction failed",
+        description: getErrorMessage(error)
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteForEveryone() {
+    setBusy(true);
+    try {
+      await onDelete();
+      setDeleteOpen(false);
+      setActionsOpen(false);
+      toast({ kind: "success", title: "Message deleted" });
+    } catch (error) {
+      toast({
+        kind: "error",
+        title: "Delete failed",
+        description: getErrorMessage(error)
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
-    <div className={cn("flex animate-in fade-in slide-in-from-bottom-1 duration-200", isMine ? "justify-end" : "justify-start")}>
+    <div
+      className={cn("flex animate-in fade-in slide-in-from-bottom-1 duration-200", isMine ? "justify-end" : "justify-start")}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        openActions();
+      }}
+      onPointerCancel={clearLongPressTimer}
+      onPointerDown={(event) => {
+        if (event.pointerType !== "touch") return;
+        clearLongPressTimer();
+        longPressTimer.current = window.setTimeout(openActions, 520);
+      }}
+      onPointerLeave={clearLongPressTimer}
+      onPointerUp={clearLongPressTimer}
+    >
       <div
         className={cn(
-          "max-w-[min(84%,620px)] space-y-1 sm:max-w-[min(76%,620px)]",
+          "relative max-w-[min(84%,620px)] space-y-1 sm:max-w-[min(76%,620px)]",
           isMine ? "items-end" : "items-start"
         )}
       >
@@ -1421,8 +1637,8 @@ function MessageBubble({
         </div>
         {message.reactions && message.reactions.length > 0 ? (
           <div className={cn("flex gap-1 px-2", isMine ? "justify-end" : "justify-start")}>
-            {message.reactions.map((reaction) => (
-              <span key={reaction} className="rounded-full border border-white/30 bg-background/80 px-2 py-0.5 text-xs shadow-sm backdrop-blur">
+            {message.reactions.map((reaction, index) => (
+              <span key={`${reaction}-${index}`} className="rounded-full border border-white/30 bg-background/80 px-2 py-0.5 text-xs shadow-sm backdrop-blur">
                 {reaction}
               </span>
             ))}
@@ -1432,6 +1648,100 @@ function MessageBubble({
           <div className="rounded-xl border border-white/30 bg-background/70 px-3 py-2 text-xs text-muted-foreground shadow-sm backdrop-blur">
             Waiting for admin approval
           </div>
+        ) : null}
+        {message.failed ? (
+          <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-sm">
+            <span>{message.error ?? "Message failed to send."}</span>
+            <button
+              className="font-semibold underline-offset-2 hover:underline disabled:opacity-60"
+              disabled={busy}
+              type="button"
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await onRetry();
+                  toast({ kind: "success", title: "Message sent" });
+                } catch (error) {
+                  toast({
+                    kind: "error",
+                    title: "Retry failed",
+                    description: getErrorMessage(error)
+                  });
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {reactionOpen ? (
+          <ReactionPicker
+            busy={busy}
+            onPick={(emoji) => void react(emoji)}
+          />
+        ) : null}
+        {actionsOpen ? (
+          <MessageActionMenu
+            busy={busy}
+            canManage={canManage}
+            canReport={canReport}
+            onClose={() => setActionsOpen(false)}
+            onReact={() => {
+              setReactionOpen(true);
+              setActionsOpen(false);
+            }}
+            onEdit={() => {
+              setEditing(true);
+              setActionsOpen(false);
+            }}
+            onDelete={() => {
+              setDeleteOpen(true);
+              setActionsOpen(false);
+            }}
+            onReport={() => {
+              setReportOpen(true);
+              setActionsOpen(false);
+            }}
+          />
+        ) : null}
+        {deleteOpen ? (
+          <DeleteMessageMenu
+            busy={busy}
+            onDeleteForEveryone={() => void deleteForEveryone()}
+            onDeleteForMe={() => {
+              toast({
+                kind: "info",
+                title: "Coming soon",
+                description: "Delete for me needs per-user message hiding and will be added with a database migration."
+              });
+              setDeleteOpen(false);
+            }}
+            onClose={() => setDeleteOpen(false)}
+          />
+        ) : null}
+        {reportOpen ? (
+          <ReportMessageModal
+            busy={busy}
+            onClose={() => setReportOpen(false)}
+            onSubmit={async (reason, details) => {
+              setBusy(true);
+              try {
+                await onReport(reason, details);
+                setReportOpen(false);
+                toast({ kind: "success", title: "Report sent" });
+              } catch (error) {
+                toast({
+                  kind: "error",
+                  title: "Report failed",
+                  description: getErrorMessage(error)
+                });
+              } finally {
+                setBusy(false);
+              }
+            }}
+          />
         ) : null}
         <div
           className={cn(
@@ -1445,28 +1755,30 @@ function MessageBubble({
             <CheckCheck
               className={cn(
                 "size-3.5",
-                message.status === "read" ? "text-primary" : "text-muted-foreground"
+                message.status === "read" ? "text-primary" : message.status === "failed" ? "text-destructive" : "text-muted-foreground"
               )}
             />
           ) : null}
-          {!message.deleted ? (
+          {!message.deleted && !message.failed ? (
             <>
-              <button className="transition hover:text-primary" disabled={busy} onClick={() => void onReact(":heart:")} type="button">
-                React
+              <button className="transition hover:text-primary disabled:opacity-60" disabled={busy} onClick={() => setReactionOpen((value) => !value)} type="button">
+                {busy ? "Working" : "React"}
               </button>
-              {isMine ? (
+              {canManage ? (
                 <>
                   <button className="transition hover:text-primary" disabled={busy} onClick={() => setEditing(true)} type="button">
                     Edit
                   </button>
-                  <button className="transition hover:text-destructive" disabled={busy} onClick={() => void onDelete()} type="button">
+                  <button className="transition hover:text-destructive" disabled={busy} onClick={() => setDeleteOpen(true)} type="button">
                     Delete
                   </button>
                 </>
               ) : null}
-              <button className="transition hover:text-destructive" disabled={busy} onClick={() => void onReport()} type="button">
-                Report
-              </button>
+              {canReport ? (
+                <button className="transition hover:text-destructive" disabled={busy} onClick={() => setReportOpen(true)} type="button">
+                  Report
+                </button>
+              ) : null}
               {message.pendingApproval ? (
                 <>
                   <button disabled={busy} onClick={() => void onApprove(true)} type="button">
@@ -1481,6 +1793,197 @@ function MessageBubble({
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+const QUICK_REACTIONS = ["\uD83D\uDC9A", "\uD83D\uDC4D", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83D\uDE4F"];
+
+function ReactionPicker({
+  busy,
+  onPick
+}: {
+  busy: boolean;
+  onPick: (emoji: string) => void;
+}) {
+  return (
+    <div className="flex w-fit gap-1 rounded-full border border-white/30 bg-background/95 p-1 shadow-xl shadow-black/10 backdrop-blur">
+      {QUICK_REACTIONS.map((emoji) => (
+        <button
+          className="flex size-9 items-center justify-center rounded-full text-lg transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+          disabled={busy}
+          key={emoji}
+          type="button"
+          onClick={() => onPick(emoji)}
+        >
+          {emoji}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MessageActionMenu({
+  busy,
+  canManage,
+  canReport,
+  onClose,
+  onReact,
+  onEdit,
+  onDelete,
+  onReport
+}: {
+  busy: boolean;
+  canManage: boolean;
+  canReport: boolean;
+  onClose: () => void;
+  onReact: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onReport: () => void;
+}) {
+  return (
+    <div className="absolute bottom-full z-20 mb-2 min-w-48 rounded-2xl border border-white/30 bg-background/95 p-1 text-sm shadow-2xl shadow-black/15 backdrop-blur">
+      <button className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-muted" disabled={busy} type="button" onClick={onReact}>
+        React
+      </button>
+      {canManage ? (
+        <>
+          <button className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-muted" disabled={busy} type="button" onClick={onEdit}>
+            Edit
+          </button>
+          <button className="w-full rounded-xl px-3 py-2 text-left text-destructive transition hover:bg-destructive/10" disabled={busy} type="button" onClick={onDelete}>
+            Delete
+          </button>
+        </>
+      ) : null}
+      {canReport ? (
+        <button className="w-full rounded-xl px-3 py-2 text-left text-destructive transition hover:bg-destructive/10" disabled={busy} type="button" onClick={onReport}>
+          Report
+        </button>
+      ) : null}
+      <button className="w-full rounded-xl px-3 py-2 text-left text-muted-foreground transition hover:bg-muted" type="button" onClick={onClose}>
+        Close
+      </button>
+    </div>
+  );
+}
+
+function DeleteMessageMenu({
+  busy,
+  onDeleteForEveryone,
+  onDeleteForMe,
+  onClose
+}: {
+  busy: boolean;
+  onDeleteForEveryone: () => void;
+  onDeleteForMe: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="absolute bottom-full z-20 mb-2 w-64 rounded-2xl border border-white/30 bg-background/95 p-3 text-sm shadow-2xl shadow-black/15 backdrop-blur">
+      <p className="mb-2 font-medium">Delete message</p>
+      <div className="space-y-1">
+        <button
+          className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-muted"
+          disabled={busy}
+          type="button"
+          onClick={onDeleteForMe}
+        >
+          <span>Delete for me</span>
+          <span className="text-xs text-muted-foreground">Soon</span>
+        </button>
+        <button
+          className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-destructive transition hover:bg-destructive/10 disabled:opacity-60"
+          disabled={busy}
+          type="button"
+          onClick={onDeleteForEveryone}
+        >
+          <span>Delete for everyone</span>
+          {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+        </button>
+      </div>
+      <Button className="mt-2 w-full" variant="ghost" size="sm" onClick={onClose}>
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
+function ReportMessageModal({
+  busy,
+  onClose,
+  onSubmit
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (reason: string, details?: string) => Promise<void>;
+}) {
+  const reasons = [
+    "Harassment or bullying",
+    "Scam or spam",
+    "Adult or unsafe content",
+    "Hate or abusive language",
+    "Other safety concern"
+  ];
+  const [reason, setReason] = useState(reasons[0]);
+  const [details, setDetails] = useState("");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-background/70 p-3 backdrop-blur sm:items-center sm:justify-center">
+      <form
+        className="w-full rounded-2xl border border-white/30 bg-card p-4 shadow-2xl shadow-black/20 sm:max-w-md"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onSubmit(reason, details.trim() || undefined);
+        }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">Report message</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Reports go to PureChat admins for review.</p>
+          </div>
+          <Button variant="ghost" size="icon" type="button" aria-label="Close report" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {reasons.map((item) => (
+            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/20 bg-background/60 px-3 py-2 text-sm" key={item}>
+              <input
+                className="accent-primary"
+                type="radio"
+                name="report-reason"
+                checked={reason === item}
+                onChange={() => setReason(item)}
+              />
+              <span>{item}</span>
+            </label>
+          ))}
+        </div>
+
+        <label className="mt-4 block text-sm">
+          <span className="font-medium">Details</span>
+          <textarea
+            className="mt-2 min-h-24 w-full resize-none rounded-xl border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-ring"
+            maxLength={1000}
+            placeholder="Add a short note for the moderation team."
+            value={details}
+            onChange={(event) => setDetails(event.target.value)}
+          />
+        </label>
+
+        <div className="mt-4 flex gap-2">
+          <Button className="flex-1" variant="ghost" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button className="flex-1" type="submit" disabled={busy}>
+            {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+            Send report
+          </Button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1513,7 +2016,7 @@ function Composer({
   textOnly = false
 }: {
   chatName: string;
-  onSend: (body: string) => Promise<void>;
+  onSend: (body: string) => Promise<unknown>;
   onTypingStart: () => void;
   onTypingStop: () => void;
   onSendAttachment: (
@@ -1548,7 +2051,14 @@ function Composer({
 
   async function submit() {
     if (uploading || sending) return;
-    if (!file && !body.trim()) return;
+    if (!file && !body.trim()) {
+      toast({
+        kind: "info",
+        title: "Message is empty",
+        description: "Write a message before sending."
+      });
+      return;
+    }
 
     if (file) {
       setUploading(true);
@@ -1569,17 +2079,18 @@ function Composer({
         setUploading(false);
       }
     } else {
+      const nextBody = body;
+      setBody("");
+      onTypingStop();
       setSending(true);
       try {
-        await onSend(body);
+        await onSend(nextBody);
         sounds.play("messageSent");
-        setBody("");
-        onTypingStop();
       } catch (error) {
         toast({
           kind: "error",
           title: "Message failed",
-          description: getErrorMessage(error)
+          description: `${getErrorMessage(error)} Use Retry on the message.`
         });
       } finally {
         setSending(false);
@@ -1731,6 +2242,11 @@ function presentRealtimeMessage(
   const readByOther = message.readReceipts?.some(
     (receipt) => receipt.userId !== currentUserId && receipt.readAt
   );
+  const metadata = message.metadata && typeof message.metadata === "object"
+    ? message.metadata
+    : null;
+  const failed = message.status === "FAILED" || Boolean(metadata?.failed);
+  const optimistic = Boolean(metadata?.optimistic) && !failed;
 
   return {
     id: message.id,
@@ -1740,25 +2256,27 @@ function presentRealtimeMessage(
     author: isMine ? undefined : message.sender?.displayName,
     text: message.deletedAt ? "This message was deleted." : message.body ?? "",
     time: formatMessageTime(message.createdAt),
-    status: readByOther ? "read" : "sent",
+    status: failed ? "failed" : optimistic ? "sending" : readByOther ? "read" : "sent",
+    failed,
+    error: typeof metadata?.error === "string" ? metadata.error : undefined,
     edited: Boolean(message.editedAt),
     deleted: Boolean(message.deletedAt),
     pendingApproval: message.status === "PENDING_APPROVAL",
     reactions: message.reactions?.map((reaction) => reaction.emoji)
       .map((emoji) => emoji === ":heart:" ? "heart" : emoji),
     attachments: message.attachments,
-    gifUrl: typeof message.metadata === "object" && message.metadata && "gifUrl" in message.metadata
-      ? String(message.metadata.gifUrl)
+    gifUrl: metadata && "gifUrl" in metadata
+      ? String(metadata.gifUrl)
       : undefined,
-    stickerUrl: typeof message.metadata === "object" && message.metadata && "storageKey" in message.metadata
-      ? String(message.metadata.storageKey).startsWith("data:")
-        ? String(message.metadata.storageKey)
-        : `/api/files/${String(message.metadata.storageKey)}`
+    stickerUrl: metadata && "storageKey" in metadata
+      ? String(metadata.storageKey).startsWith("data:")
+        ? String(metadata.storageKey)
+        : `/api/files/${String(metadata.storageKey)}`
       : undefined
   };
 }
 
-async function reportMessage(chatId: string, message: Message) {
+async function reportMessage(chatId: string, message: Message, reason: string, details?: string) {
   const response = await fetch("/api/reports", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1767,7 +2285,8 @@ async function reportMessage(chatId: string, message: Message) {
       chatId,
       messageId: message.originalId,
       reportedUserId: message.senderId,
-      reason: "Unsafe or unwanted message"
+      reason,
+      details
     })
   });
   const data = await response.json().catch(() => ({}));

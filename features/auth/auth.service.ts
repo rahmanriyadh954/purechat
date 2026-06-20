@@ -7,12 +7,15 @@ import {
   hashToken,
   refreshTokenMaxAgeSeconds
 } from "./auth.tokens";
+import { getOtpDeliveryMessage } from "./otp.delivery";
 import { createOtpChallenge, normalizeIdentifier, verifyOtpChallenge } from "./otp.service";
 import { loginSchema, otpStartSchema, otpVerifySchema, registerSchema } from "./auth.validators";
 import { writeAuditLog } from "@/server/security/audit";
 import { cacheDel, cacheGet, cacheSetEx } from "@/server/redis/client";
 
 const accessSessionKey = (token: string) => `auth:access:${hashToken(token)}`;
+export const duplicateIdentityMessage = "This email, phone, or username cannot be used.";
+export const duplicateDeviceMessage = "This device already has an account. Please sign in instead.";
 
 export type RequestMeta = {
   ipAddress?: string;
@@ -38,21 +41,42 @@ export async function registerUser(input: unknown, meta: RequestMeta) {
   const data = registerSchema.parse(input);
   const email = data.email ? normalizeIdentifier(data.email) : undefined;
   const phone = data.phone?.trim();
+  const username = data.username.toLowerCase();
 
-  if (email || phone) {
+  if (email || phone || username) {
     const existingIdentity = await prisma.user.findFirst({
       where: {
         deletedAt: null,
         OR: [
           ...(email ? [{ email }] : []),
-          ...(phone ? [{ phone }] : [])
+          ...(phone ? [{ phone }] : []),
+          { username }
         ]
       },
-      select: { id: true }
+      select: {
+        email: true,
+        phone: true,
+        username: true
+      }
     });
 
     if (existingIdentity) {
-      throw new Error("An account may already exist with those details. Please sign in or use account recovery.");
+      await writeAuditLog({
+        action: "DUPLICATE_ACCOUNT_ATTEMPT_BLOCKED",
+        entityType: "User",
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+        metadata: {
+          reason: "identity_match",
+          matchedFields: [
+            email && existingIdentity.email === email ? "email" : null,
+            phone && existingIdentity.phone === phone ? "phone" : null,
+            existingIdentity.username === username ? "username" : null
+          ].filter(Boolean)
+        }
+      });
+
+      throw new Error(duplicateIdentityMessage);
     }
   }
 
@@ -69,23 +93,27 @@ export async function registerUser(input: unknown, meta: RequestMeta) {
     if (matchingDevice) {
       await prisma.duplicateAccountReview.create({
         data: {
-          attemptedEmail: email,
-          attemptedPhone: phone,
-          attemptedUsername: data.username.toLowerCase(),
+          attemptedEmail: null,
+          attemptedPhone: null,
+          attemptedUsername: null,
           fingerprintHash: data.deviceFingerprintHash,
-          reason: "Device fingerprint is already associated with another account."
+          reason: "Device fingerprint attempted another account registration.",
+          status: "REJECTED",
+          reviewedAt: new Date()
         }
       });
 
       await writeAuditLog({
-        action: "DUPLICATE_ACCOUNT_REVIEW_CREATED",
+        action: "DUPLICATE_ACCOUNT_ATTEMPT_BLOCKED",
         entityType: "Device",
         metadata: {
           reason: "fingerprint_match"
-        }
+        },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent
       });
 
-      throw new Error("This device needs admin review before another account can be created.");
+      throw new Error(duplicateDeviceMessage);
     }
   }
 
@@ -95,7 +123,7 @@ export async function registerUser(input: unknown, meta: RequestMeta) {
     data: {
       email,
       phone,
-      username: data.username.toLowerCase(),
+      username,
       displayName: data.displayName,
       passwordHash,
       profile: {
@@ -126,24 +154,30 @@ export async function registerUser(input: unknown, meta: RequestMeta) {
     });
   }
 
+  let verificationDelivery = getOtpDeliveryMessage();
+
   if (user.email) {
-    await createOtpChallenge({
+    const challenge = await createOtpChallenge({
       userId: user.id,
       identifier: user.email,
       purpose: "VERIFY_EMAIL",
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     });
+    verificationDelivery = challenge.delivery;
   }
 
   if (user.phone) {
-    await createOtpChallenge({
+    const challenge = await createOtpChallenge({
       userId: user.id,
       identifier: user.phone,
       purpose: "VERIFY_PHONE",
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     });
+    if (!user.email) {
+      verificationDelivery = challenge.delivery;
+    }
   }
 
   await writeAuditLog({
@@ -155,7 +189,14 @@ export async function registerUser(input: unknown, meta: RequestMeta) {
     userAgent: meta.userAgent
   });
 
-  return user;
+  return {
+    user,
+    verification: {
+      message: verificationDelivery.message,
+      delivery: verificationDelivery,
+      cooldownSeconds: 60
+    }
+  };
 }
 
 export async function loginWithPassword(input: unknown, meta: RequestMeta) {
@@ -228,18 +269,27 @@ export async function startOtpLogin(input: unknown, meta: RequestMeta) {
   });
 
   if (user) {
-    await createOtpChallenge({
+    const challenge = await createOtpChallenge({
       userId: user.id,
       identifier: isEmail(identifier) ? identifier : data.identifier.trim(),
       purpose: "LOGIN",
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent
     });
+
+    return {
+      ok: true,
+      message: challenge.delivery.message,
+      delivery: challenge.delivery,
+      cooldownSeconds: 60
+    };
   }
 
   return {
     ok: true,
-    message: "If the account exists, we sent a code."
+    message: getOtpDeliveryMessage().message,
+    delivery: getOtpDeliveryMessage(),
+    cooldownSeconds: 60
   };
 }
 
@@ -258,7 +308,58 @@ export async function verifyOtpLogin(input: unknown, meta: RequestMeta) {
   return createSession(challenge.userId, meta);
 }
 
-export async function verifyAccountOtp(input: unknown) {
+export async function resendAccountVerificationOtp(input: unknown, meta: RequestMeta) {
+  const data = otpStartSchema.parse(input);
+  const identifier = normalizeIdentifier(data.identifier);
+  const user = await prisma.user.findFirst({
+    where: isEmail(identifier)
+      ? { email: identifier, deletedAt: null, status: "ACTIVE" }
+      : { phone: data.identifier.trim(), deletedAt: null, status: "ACTIVE" },
+    select: {
+      id: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true
+    }
+  });
+  const purpose = isEmail(identifier) ? "VERIFY_EMAIL" : "VERIFY_PHONE";
+
+  if (!user) {
+    return {
+      ok: true,
+      message: getOtpDeliveryMessage().message,
+      delivery: getOtpDeliveryMessage(),
+      cooldownSeconds: 60
+    };
+  }
+
+  if (
+    (purpose === "VERIFY_EMAIL" && user.emailVerifiedAt) ||
+    (purpose === "VERIFY_PHONE" && user.phoneVerifiedAt)
+  ) {
+    return {
+      ok: true,
+      message: "This account is already verified.",
+      cooldownSeconds: 60
+    };
+  }
+
+  const challenge = await createOtpChallenge({
+    userId: user.id,
+    identifier: data.identifier,
+    purpose,
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent
+  });
+
+  return {
+    ok: true,
+    message: challenge.delivery.message,
+    delivery: challenge.delivery,
+    cooldownSeconds: 60
+  };
+}
+
+export async function verifyAccountOtp(input: unknown, meta: RequestMeta) {
   const data = otpVerifySchema.parse(input);
   const identifier = normalizeIdentifier(data.identifier);
   const purpose = isEmail(identifier) ? "VERIFY_EMAIL" : "VERIFY_PHONE";
@@ -279,6 +380,8 @@ export async function verifyAccountOtp(input: unknown) {
         ? { emailVerifiedAt: new Date(), isVerified: true }
         : { phoneVerifiedAt: new Date(), isVerified: true }
   });
+
+  return createSession(challenge.userId, meta);
 }
 
 export async function verifyTwoFactor(input: unknown, meta: RequestMeta) {
@@ -351,6 +454,35 @@ export async function getSessionFromAccessToken(accessToken?: string) {
   return prisma.session.findFirst({
     where: {
       id: sessionId,
+      revokedAt: null,
+      expiresAt: {
+        gt: new Date()
+      }
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          email: true,
+          phone: true,
+          avatarUrl: true,
+          role: true,
+          status: true
+        }
+      },
+      device: true
+    }
+  });
+}
+
+export async function getSessionFromRefreshToken(refreshToken?: string) {
+  if (!refreshToken) return null;
+
+  return prisma.session.findFirst({
+    where: {
+      refreshTokenHash: hashToken(refreshToken),
       revokedAt: null,
       expiresAt: {
         gt: new Date()

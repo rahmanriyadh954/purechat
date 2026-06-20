@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { setAuthCookies } from "@/features/auth/auth.cookies";
 import { loginWithPassword } from "@/features/auth/auth.service";
 import { loginSchema } from "@/features/auth/auth.validators";
@@ -10,6 +11,23 @@ import {
   resetRateLimit
 } from "@/server/security/rate-limit";
 
+const invalidLoginMessage = "The email or password is incorrect.";
+
+function logAuthFailure(reason: string, details?: Record<string, unknown>) {
+  if (process.env.NODE_ENV === "production") return;
+  console.warn("[PureChat Auth] Login failed", { reason, ...details });
+}
+
+function isInvalidCredentialError(error: unknown) {
+  if (error instanceof ZodError) return true;
+  if (!(error instanceof Error)) return false;
+
+  return (
+    error.message === "The login details are incorrect." ||
+    error.message === invalidLoginMessage
+  );
+}
+
 export async function POST(request: NextRequest) {
   const ipAddress = getClientIp(request.headers);
 
@@ -18,24 +36,33 @@ export async function POST(request: NextRequest) {
 
     const identifier = normalizeRateLimitIdentifier(body.identifier);
     const rateLimitKey = `rate:auth:login:${ipAddress}:${identifier}`;
+    let result: Awaited<ReturnType<typeof loginWithPassword>>;
 
-    const limit = await rateLimit({
-      key: rateLimitKey,
-      limit: 10,
-      windowSeconds: 60 * 10
-    });
+    try {
+      result = await loginWithPassword(body, {
+        ipAddress,
+        userAgent: request.headers.get("user-agent") ?? undefined
+      });
+    } catch (error) {
+      if (!isInvalidCredentialError(error)) throw error;
 
-    if (!limit.allowed) {
-      return NextResponse.json(
-        { error: "Too many login tries for this account. Please wait a little." },
-        { status: 429, headers: { "Retry-After": String(limit.retryAfter) } }
-      );
+      const limit = await rateLimit({
+        key: rateLimitKey,
+        limit: 10,
+        windowSeconds: 60 * 10
+      });
+
+      if (!limit.allowed) {
+        logAuthFailure("rate_limited", { ipAddress, identifier });
+        return NextResponse.json(
+          { error: "Too many login tries for this account. Please wait a little." },
+          { status: 429, headers: { "Retry-After": String(limit.retryAfter) } }
+        );
+      }
+
+      logAuthFailure("invalid_credentials", { ipAddress, identifier });
+      return NextResponse.json({ error: invalidLoginMessage }, { status: 401 });
     }
-
-    const result = await loginWithPassword(body, {
-      ipAddress,
-      userAgent: request.headers.get("user-agent") ?? undefined
-    });
 
     if (result.requiresTwoFactor) {
       return NextResponse.json({
@@ -46,8 +73,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (!result.session) {
+      logAuthFailure("missing_session", { ipAddress, identifier });
       return NextResponse.json(
-        { error: "The login details are incorrect." },
+        { error: invalidLoginMessage },
         { status: 401 }
       );
     }
@@ -60,16 +88,17 @@ export async function POST(request: NextRequest) {
       message: "Signed in."
     });
   } catch (error) {
-    console.error("[PureChat Login Error]", error);
+    const message = error instanceof Error ? error.message : "Unknown login error";
+    const isInvalidLogin = isInvalidCredentialError(error);
 
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : "The login details are incorrect.";
+    logAuthFailure(isInvalidLogin ? "invalid_credentials" : "request_error", {
+      ipAddress,
+      error: message
+    });
 
     return NextResponse.json(
-      { error: message },
-      { status: 401 }
+      { error: isInvalidLogin ? invalidLoginMessage : "Sign in could not be completed. Please try again." },
+      { status: isInvalidLogin ? 401 : 400 }
     );
   }
 }

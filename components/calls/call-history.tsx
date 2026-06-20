@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AlertCircle, Loader2, Phone, PhoneMissed, Video } from "lucide-react";
+import { AlertCircle, ArrowLeft, Loader2, Phone, PhoneMissed, Video } from "lucide-react";
+import { AppRail, MobileBottomNavigation } from "@/components/navigation/app-navigation";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -50,40 +52,52 @@ export function CallHistory() {
   }, []);
 
   return (
-    <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-8 sm:py-10">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Calls</h1>
-          <p className="text-sm text-muted-foreground">Your recent audio and video calls.</p>
-        </div>
-        <Button variant="secondary" onClick={() => void load()}>
-          Refresh
-        </Button>
-      </div>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.12),transparent_32%),hsl(var(--background))] pb-24 text-foreground md:h-screen md:overflow-hidden md:pb-0">
+      <div className="flex min-h-screen p-0 md:h-full md:p-3">
+        <AppRail />
+        <section className="mx-auto flex w-full max-w-3xl flex-col space-y-6 px-4 py-8 sm:py-10 md:overflow-y-auto md:rounded-2xl md:border md:border-white/20 md:bg-card/72 md:shadow-2xl md:shadow-black/5 md:backdrop-blur-2xl">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <Button asChild className="mb-4 gap-2" variant="ghost">
+                <Link href="/chats">
+                  <ArrowLeft className="size-4" />
+                  Back to chats
+                </Link>
+              </Button>
+              <h1 className="text-2xl font-semibold">Calls</h1>
+              <p className="text-sm text-muted-foreground">Your recent audio and video calls.</p>
+            </div>
+            <Button variant="secondary" onClick={() => void load()}>
+              Refresh
+            </Button>
+          </div>
 
-      {loading ? (
-        <div className="flex min-h-60 items-center justify-center rounded-lg border bg-card">
-          <Loader2 className="size-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : error ? (
-        <div className="rounded-lg border border-destructive/30 bg-card p-6 text-center">
-          <AlertCircle className="mx-auto mb-3 size-7 text-destructive" />
-          <p className="font-medium">Could not load calls</p>
-          <p className="mt-1 text-sm text-muted-foreground">{error}</p>
-        </div>
-      ) : calls.length === 0 ? (
-        <div className="rounded-lg border border-dashed bg-card p-8 text-center">
-          <Phone className="mx-auto mb-3 size-7 text-muted-foreground" />
-          <p className="font-medium">No calls yet</p>
-          <p className="mt-1 text-sm text-muted-foreground">Voice and video calls will appear here.</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {calls.map((call) => (
-            <CallHistoryRow call={call} key={call.id} />
-          ))}
-        </div>
-      )}
+          {loading ? (
+            <div className="flex min-h-60 items-center justify-center rounded-lg border bg-card">
+              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : error ? (
+            <div className="rounded-lg border border-destructive/30 bg-card p-6 text-center">
+              <AlertCircle className="mx-auto mb-3 size-7 text-destructive" />
+              <p className="font-medium">Could not load calls</p>
+              <p className="mt-1 text-sm text-muted-foreground">{error}</p>
+            </div>
+          ) : calls.length === 0 ? (
+            <div className="rounded-lg border border-dashed bg-card p-8 text-center">
+              <Phone className="mx-auto mb-3 size-7 text-muted-foreground" />
+              <p className="font-medium">No calls yet</p>
+              <p className="mt-1 text-sm text-muted-foreground">Voice and video calls will appear here.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {calls.map((call) => (
+                <CallHistoryRow call={call} key={call.id} />
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+      <MobileBottomNavigation />
     </main>
   );
 }

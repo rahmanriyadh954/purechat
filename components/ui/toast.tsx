@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
-import { CheckCircle2, Info, XCircle } from "lucide-react";
+import { CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type ToastKind = "success" | "error" | "info";
@@ -31,6 +31,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(() => ({ toast }), [toast]);
+  const dismiss = useCallback((id: string) => {
+    setToasts((current) => current.filter((item) => item.id !== id));
+  }, []);
 
   return (
     <ToastContext.Provider value={value}>
@@ -49,10 +52,18 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             {item.kind === "success" ? <CheckCircle2 className="size-5 text-emerald-600" /> : null}
             {item.kind === "error" ? <XCircle className="size-5 text-destructive" /> : null}
             {item.kind === "info" ? <Info className="size-5 text-accent" /> : null}
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="font-medium">{item.title}</p>
               {item.description ? <p className="mt-1 text-muted-foreground">{item.description}</p> : null}
             </div>
+            <button
+              className="rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              type="button"
+              aria-label="Dismiss notification"
+              onClick={() => dismiss(item.id)}
+            >
+              <X className="size-4" />
+            </button>
           </div>
         ))}
       </div>

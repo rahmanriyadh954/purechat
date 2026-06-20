@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { startOtpLogin } from "@/features/auth/auth.service";
+import { resendAccountVerificationOtp } from "@/features/auth/auth.service";
 import { otpStartSchema } from "@/features/auth/auth.validators";
 import { apiError, readValidatedJson } from "@/server/security/api";
 import { getClientIp, rateLimit } from "@/server/security/rate-limit";
@@ -7,8 +7,8 @@ import { getClientIp, rateLimit } from "@/server/security/rate-limit";
 export async function POST(request: NextRequest) {
   const ipAddress = getClientIp(request.headers);
   const limit = await rateLimit({
-    key: `rate:auth:otp:start:${ipAddress}`,
-    limit: 5,
+    key: `rate:auth:verify-account:resend:${ipAddress}`,
+    limit: 3,
     windowSeconds: 60 * 10
   });
 
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await readValidatedJson(request, otpStartSchema);
-    const result = await startOtpLogin(body, {
+    const result = await resendAccountVerificationOtp(body, {
       ipAddress,
       userAgent: request.headers.get("user-agent") ?? undefined
     });

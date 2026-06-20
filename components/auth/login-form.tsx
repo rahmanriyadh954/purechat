@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 async function postJson(url: string, body: unknown) {
@@ -22,6 +23,18 @@ async function postJson(url: string, body: unknown) {
   return data;
 }
 
+function getSafeNextUrl() {
+  if (typeof window === "undefined") return "/chats";
+
+  const next = new URLSearchParams(window.location.search).get("next");
+
+  if (!next || !next.startsWith("/") || next.startsWith("//")) {
+    return "/chats";
+  }
+
+  return next;
+}
+
 export function LoginForm() {
   const router = useRouter();
   const [mode, setMode] = useState<"password" | "otp">("password");
@@ -33,7 +46,8 @@ export function LoginForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function submitPassword() {
+  async function submitPassword(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     setLoading(true);
     setError("");
     setMessage("");
@@ -46,9 +60,10 @@ export function LoginForm() {
         return;
       }
 
-      router.push("/chats");
+      router.replace(getSafeNextUrl() as Route);
+      router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed.");
+      setError(err instanceof Error ? err.message : "Sign in could not be completed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -77,7 +92,8 @@ export function LoginForm() {
 
     try {
       await postJson("/api/auth/otp/verify", { identifier, code });
-      router.push("/chats");
+      router.replace(getSafeNextUrl() as Route);
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Code check failed.");
     } finally {
@@ -86,7 +102,7 @@ export function LoginForm() {
   }
 
   return (
-    <div className="space-y-4 rounded-lg border bg-card p-5">
+    <form className="space-y-4 rounded-lg border bg-card p-5" onSubmit={mode === "password" ? submitPassword : undefined}>
       <div className="grid grid-cols-2 gap-2 rounded-md bg-muted p-1">
         <button
           className={`rounded-md px-3 py-2 text-sm ${mode === "password" ? "bg-background shadow-sm" : ""}`}
@@ -134,15 +150,15 @@ export function LoginForm() {
       {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
 
       {mode === "password" ? (
-        <Button className="w-full" disabled={loading} onClick={submitPassword}>
+        <Button className="w-full" disabled={loading} type="submit">
           Sign in
         </Button>
       ) : otpSent ? (
-        <Button className="w-full" disabled={loading} onClick={verifyOtp}>
+        <Button className="w-full" disabled={loading} onClick={verifyOtp} type="button">
           Verify code
         </Button>
       ) : (
-        <Button className="w-full" disabled={loading} onClick={startOtp}>
+        <Button className="w-full" disabled={loading} onClick={startOtp} type="button">
           Send code
         </Button>
       )}
@@ -153,6 +169,6 @@ export function LoginForm() {
           Create account
         </Link>
       </p>
-    </div>
+    </form>
   );
 }

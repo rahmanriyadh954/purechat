@@ -6,19 +6,22 @@ const prisma = new PrismaClient();
 async function main() {
   const adminEmail = process.env.SEED_ADMIN_EMAIL ?? "admin@purechat.local";
   const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? "Admin123456!";
+  const adminPasswordHash = await hash(adminPassword, 12);
 
   const admin = await prisma.user.upsert({
     where: { email: adminEmail },
     update: {
+      passwordHash: adminPasswordHash,
       role: "SUPER_ADMIN",
       status: "ACTIVE",
-      isVerified: true
+      isVerified: true,
+      emailVerifiedAt: new Date()
     },
     create: {
       email: adminEmail,
       username: "purechat_admin",
       displayName: "PureChat Admin",
-      passwordHash: await hash(adminPassword, 12),
+      passwordHash: adminPasswordHash,
       role: "SUPER_ADMIN",
       status: "ACTIVE",
       isVerified: true,
