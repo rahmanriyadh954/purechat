@@ -6,7 +6,7 @@ import { socketEvents } from "@/server/socket/events";
 
 export type RealtimeChat = {
   id: string;
-  type: "DIRECT" | "GROUP" | "SAVED";
+  type: "DIRECT" | "GROUP" | "SAVED" | "ANONYMOUS";
   title: string;
   initials: string;
   avatarUrl?: string | null;
@@ -587,7 +587,7 @@ export function useRealtimeMessaging() {
         throw new Error("File upload failed.");
       }
 
-      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.attachmentComplete, {
+      const payload = {
         chatId,
         fileName: file.name,
         mimeType: file.type,
@@ -595,24 +595,67 @@ export function useRealtimeMessaging() {
         kind,
         storageKey: presign.storageKey,
         caption
-      });
+      };
 
-      appendMessage(result.message);
-      updateChatPreview(result.message);
+      let message: RealtimeMessage;
+      try {
+        const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.attachmentComplete, payload);
+        message = result.message;
+      } catch {
+        const completeResponse = await fetch("/api/attachments/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const complete = await completeResponse.json();
+        if (!completeResponse.ok) {
+          throw new Error(complete.error ?? "Could not send file.");
+        }
+        message = complete.message as RealtimeMessage;
+      }
+
+      appendMessage(message);
+      updateChatPreview(message);
     },
     [emitWithAck]
   );
 
   const sendGif = useCallback(async (chatId: string, gifUrl: string, title?: string) => {
-    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.gifSend, { chatId, gifUrl, title });
-    appendMessage(result.message);
-    updateChatPreview(result.message);
+    let message: RealtimeMessage;
+    try {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.gifSend, { chatId, gifUrl, title });
+      message = result.message;
+    } catch {
+      const response = await fetch(`/api/chats/${chatId}/gifs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gifUrl, title })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not send GIF.");
+      message = data.message as RealtimeMessage;
+    }
+    appendMessage(message);
+    updateChatPreview(message);
   }, [emitWithAck]);
 
   const sendSticker = useCallback(async (chatId: string, stickerId: string) => {
-    const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.stickerSend, { chatId, stickerId });
-    appendMessage(result.message);
-    updateChatPreview(result.message);
+    let message: RealtimeMessage;
+    try {
+      const result = await emitWithAck<{ message: RealtimeMessage }>(socketEvents.stickerSend, { chatId, stickerId });
+      message = result.message;
+    } catch {
+      const response = await fetch(`/api/chats/${chatId}/stickers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stickerId })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not send sticker.");
+      message = data.message as RealtimeMessage;
+    }
+    appendMessage(message);
+    updateChatPreview(message);
   }, [emitWithAck]);
 
   const hideChat = useCallback((chatId: string) => {

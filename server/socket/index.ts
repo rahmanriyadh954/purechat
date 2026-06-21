@@ -21,6 +21,7 @@ import {
   startCall,
   updateScreenShare
 } from "@/features/calls/call.service";
+import { prisma } from "@/lib/prisma";
 import { assertChatMember } from "@/server/security/permissions";
 import { authenticateSocket, type AuthenticatedSocket } from "./auth";
 import { socketEvents } from "./events";
@@ -40,6 +41,29 @@ import type {
 } from "./types";
 
 const socketCounters = new Map<string, { count: number; resetAt: number }>();
+
+async function emitMessageToChat(
+  io: Server,
+  chatId: string,
+  event: string,
+  message: object
+) {
+  const members = await prisma.chatMember.findMany({
+    where: {
+      chatId,
+      status: "ACTIVE"
+    },
+    select: {
+      userId: true
+    }
+  });
+
+  members.forEach((member) => {
+    io.to(`user:${member.userId}`).emit(event, {
+      message: presentMessage(message, member.userId)
+    });
+  });
+}
 
 function checkSocketRateLimit(userId: string, action: string, limit: number, windowMs: number) {
   const key = `${userId}:${action}`;
@@ -138,22 +162,19 @@ export function createSocketServer(httpServer: HttpServer) {
             );
 
             io.to(`user:${userId}`).emit(socketEvents.messageNew, {
-              message: presentMessage(message),
+              message: presentMessage(message, userId),
               clientId: payload.clientId
             });
             admins.forEach((admin) => {
               io.to(`user:${admin.userId}`).emit(socketEvents.messageNew, {
-                message: presentMessage(message),
+                message: presentMessage(message, admin.userId),
                 clientId: payload.clientId
               });
             });
           } else {
-            io.to(`chat:${message.chatId}`).emit(socketEvents.messageNew, {
-              message: presentMessage(message),
-              clientId: payload.clientId
-            });
+            await emitMessageToChat(io, message.chatId, socketEvents.messageNew, message);
           }
-          ack?.({ ok: true, message: presentMessage(message) });
+          ack?.({ ok: true, message: presentMessage(message, userId) });
         } catch (error) {
           ack?.({
             ok: false,
@@ -171,10 +192,8 @@ export function createSocketServer(httpServer: HttpServer) {
             throw new Error("You are sending files too quickly.");
           }
           const message = await completeAttachmentMessage(payload, userId);
-          io.to(`chat:${message.chatId}`).emit(socketEvents.messageNew, {
-            message: presentMessage(message)
-          });
-          ack?.({ ok: true, message: presentMessage(message) });
+          await emitMessageToChat(io, message.chatId, socketEvents.messageNew, message);
+          ack?.({ ok: true, message: presentMessage(message, userId) });
         } catch (error) {
           ack?.({
             ok: false,
@@ -189,10 +208,8 @@ export function createSocketServer(httpServer: HttpServer) {
       async (payload: GifSendPayload, ack?: (value: unknown) => void) => {
         try {
           const message = await sendGifMessage(payload, userId);
-          io.to(`chat:${message.chatId}`).emit(socketEvents.messageNew, {
-            message: presentMessage(message)
-          });
-          ack?.({ ok: true, message: presentMessage(message) });
+          await emitMessageToChat(io, message.chatId, socketEvents.messageNew, message);
+          ack?.({ ok: true, message: presentMessage(message, userId) });
         } catch (error) {
           ack?.({
             ok: false,
@@ -207,10 +224,8 @@ export function createSocketServer(httpServer: HttpServer) {
       async (payload: StickerSendPayload, ack?: (value: unknown) => void) => {
         try {
           const message = await sendStickerMessage(payload, userId);
-          io.to(`chat:${message.chatId}`).emit(socketEvents.messageNew, {
-            message: presentMessage(message)
-          });
-          ack?.({ ok: true, message: presentMessage(message) });
+          await emitMessageToChat(io, message.chatId, socketEvents.messageNew, message);
+          ack?.({ ok: true, message: presentMessage(message, userId) });
         } catch (error) {
           ack?.({
             ok: false,
@@ -251,8 +266,8 @@ export function createSocketServer(httpServer: HttpServer) {
       async (payload: EditMessagePayload, ack?: (value: unknown) => void) => {
         try {
           const message = await editMessage(payload, userId);
-          io.to(`chat:${message.chatId}`).emit(socketEvents.messageUpdated, { message: presentMessage(message) });
-          ack?.({ ok: true, message: presentMessage(message) });
+          await emitMessageToChat(io, message.chatId, socketEvents.messageUpdated, message);
+          ack?.({ ok: true, message: presentMessage(message, userId) });
         } catch (error) {
           ack?.({
             ok: false,
@@ -267,8 +282,8 @@ export function createSocketServer(httpServer: HttpServer) {
       async (payload: MessageIdPayload, ack?: (value: unknown) => void) => {
         try {
           const message = await deleteMessage(payload, userId);
-          io.to(`chat:${message.chatId}`).emit(socketEvents.messageDeleted, { message: presentMessage(message) });
-          ack?.({ ok: true, message: presentMessage(message) });
+          await emitMessageToChat(io, message.chatId, socketEvents.messageDeleted, message);
+          ack?.({ ok: true, message: presentMessage(message, userId) });
         } catch (error) {
           ack?.({
             ok: false,
@@ -307,8 +322,8 @@ export function createSocketServer(httpServer: HttpServer) {
     authedSocket.on(socketEvents.reactionAdd, async (payload: ReactionPayload, ack?: (value: unknown) => void) => {
       try {
         const message = await addReaction(payload, userId);
-        io.to(`chat:${payload.chatId}`).emit(socketEvents.reactionUpdated, { message: presentMessage(message) });
-        ack?.({ ok: true, message: presentMessage(message) });
+        await emitMessageToChat(io, payload.chatId, socketEvents.reactionUpdated, message);
+        ack?.({ ok: true, message: presentMessage(message, userId) });
       } catch (error) {
         ack?.({
           ok: false,
@@ -320,8 +335,8 @@ export function createSocketServer(httpServer: HttpServer) {
     authedSocket.on(socketEvents.reactionRemove, async (payload: ReactionPayload, ack?: (value: unknown) => void) => {
       try {
         const message = await removeReaction(payload, userId);
-        io.to(`chat:${payload.chatId}`).emit(socketEvents.reactionUpdated, { message: presentMessage(message) });
-        ack?.({ ok: true, message: presentMessage(message) });
+        await emitMessageToChat(io, payload.chatId, socketEvents.reactionUpdated, message);
+        ack?.({ ok: true, message: presentMessage(message, userId) });
       } catch (error) {
         ack?.({
           ok: false,

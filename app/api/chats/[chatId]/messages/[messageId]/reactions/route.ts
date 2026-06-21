@@ -25,7 +25,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     const body = await readValidatedJson(request, reactionBodySchema);
     const message = await addReaction({ ...body, chatId, messageId }, session.userId);
 
-    return NextResponse.json({ message: presentMessage(message) });
+    return NextResponse.json({ message: presentMessage(message, session.userId) });
   } catch (error) {
     return apiError(error);
   }
@@ -41,7 +41,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     });
     const message = await removeReaction({ ...body, chatId, messageId }, session.userId);
 
-    return NextResponse.json({ message: presentMessage(message) });
+    return NextResponse.json({ message: presentMessage(message, session.userId) });
   } catch (error) {
     return apiError(error);
   }

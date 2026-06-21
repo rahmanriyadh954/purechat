@@ -44,7 +44,17 @@ export async function GET() {
     return NextResponse.json({ packs: [pack] });
   }
 
-  return NextResponse.json({ packs });
+  return NextResponse.json({
+    packs: packs.map((pack) => ({
+      ...pack,
+      stickers: pack.stickers.map((sticker) => ({
+        ...sticker,
+        storageKey: sticker.storageKey.startsWith("data:")
+          ? sticker.storageKey
+          : stickerDataUrl(sticker.name, "#059669")
+      }))
+    }))
+  });
 }
 
 function stickerDataUrl(label: string, color: string) {

@@ -20,7 +20,9 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const { chatId } = await params;
     const messages = await listMessages(chatId, session.userId);
 
-    return NextResponse.json({ messages: messages.map(presentMessage) });
+    return NextResponse.json({
+      messages: messages.map((message) => presentMessage(message, session.userId))
+    });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Could not load messages." },
@@ -36,7 +38,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     const body = await readValidatedJson(request, sendMessageSchema.omit({ chatId: true }));
     const message = await sendTextMessage({ ...body, chatId }, session.userId);
 
-    return NextResponse.json({ message: presentMessage(message) });
+    return NextResponse.json({ message: presentMessage(message, session.userId) });
   } catch (error) {
     return apiError(error);
   }

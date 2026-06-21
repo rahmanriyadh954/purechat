@@ -41,6 +41,14 @@ export async function startCall(input: unknown, startedById: string) {
   const data = startCallSchema.parse(input);
   await assertChatMember(startedById, data.chatId);
 
+  const anonymous = await prisma.anonymousConversation.findUnique({
+    where: { chatId: data.chatId },
+    select: { revealedAt: true }
+  });
+  if (anonymous && !anonymous.revealedAt) {
+    throw new Error("Calls are disabled in anonymous mode for safety.");
+  }
+
   const members = await prisma.chatMember.findMany({
     where: {
       chatId: data.chatId,

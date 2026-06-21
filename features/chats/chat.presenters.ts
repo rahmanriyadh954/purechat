@@ -70,14 +70,18 @@ export function presentChat(
     members: chat.members.map((member) => {
       const masked = anonymous && !anonymousRevealed;
       return {
-        userId: member.userId,
+        userId: masked
+          ? member.userId === currentUserId
+            ? currentUserId
+            : "anonymous"
+          : member.userId,
         role: member.role,
         status: member.status,
         displayName: masked ? getAnonymousAlias(anonymous, member.userId) : member.user.displayName,
         username: masked ? "" : member.user.username,
         avatarUrl: masked ? null : member.user.avatarUrl,
-        lastSeenAt: member.user.lastSeenAt,
-        online: options.onlineUserIds?.has(member.userId) ?? false
+        lastSeenAt: masked ? null : member.user.lastSeenAt,
+        online: masked ? false : options.onlineUserIds?.has(member.userId) ?? false
       };
     })
   };

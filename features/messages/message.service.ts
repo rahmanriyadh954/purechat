@@ -52,7 +52,7 @@ const messageInclude = {
   }
 } as const;
 
-export function presentMessage<T extends object>(message: T) {
+export function presentMessage<T extends object>(message: T, currentUserId?: string) {
   const attachments = "attachments" in message
     ? (message as { attachments?: Array<{ sizeBytes: bigint }> }).attachments
     : undefined;
@@ -85,6 +85,11 @@ export function presentMessage<T extends object>(message: T) {
 
   const presented = {
     ...message,
+    ...(shouldMask
+      ? {
+          senderId: senderId && currentUserId && senderId === currentUserId ? currentUserId : null
+        }
+      : {}),
     attachments: (attachments ?? []).map((attachment) => ({
       ...attachment,
       sizeBytes: attachment.sizeBytes.toString()
@@ -93,7 +98,7 @@ export function presentMessage<T extends object>(message: T) {
       ? {
           sender: senderId
             ? {
-                id: senderId,
+                id: senderId && currentUserId && senderId === currentUserId ? currentUserId : "anonymous",
                 displayName: senderAlias,
                 username: "",
                 avatarUrl: null
@@ -155,11 +160,26 @@ async function assertAnonymousChatAllowed(chatId: string) {
   });
 
   if (!anonymous) return;
-  if (anonymous.expiresAt < new Date()) {
+  if (anonymous.status === "PENDING" && anonymous.expiresAt < new Date()) {
     throw new Error("This anonymous conversation has expired.");
   }
   if (!["ACCEPTED", "REVEALED"].includes(anonymous.status)) {
     throw new Error("The receiver must accept this anonymous request before chatting.");
+  }
+}
+
+async function assertAnonymousChatVisible(chatId: string) {
+  const anonymous = await prisma.anonymousConversation.findUnique({
+    where: { chatId },
+    select: { status: true, expiresAt: true }
+  });
+
+  if (!anonymous) return;
+  if (["REJECTED", "REPORTED", "BLOCKED", "EXPIRED"].includes(anonymous.status)) {
+    throw new Error("This anonymous conversation is closed.");
+  }
+  if (anonymous.status === "PENDING" && anonymous.expiresAt < new Date()) {
+    throw new Error("This anonymous request has expired.");
   }
 }
 
@@ -424,6 +444,9 @@ export async function sendStickerMessage(
   const sticker = await prisma.sticker.findUniqueOrThrow({
     where: { id: input.stickerId }
   });
+  const stickerStorageKey = sticker.storageKey.startsWith("data:")
+    ? sticker.storageKey
+    : createSafeStickerDataUrl(sticker.name);
 
   return prisma.$transaction(async (tx) => {
     const message = await tx.message.create({
@@ -433,7 +456,7 @@ export async function sendStickerMessage(
         type: "STICKER",
         metadata: {
           stickerId: sticker.id,
-          storageKey: sticker.storageKey,
+          storageKey: stickerStorageKey,
           emoji: sticker.emoji
         }
       },
@@ -458,6 +481,11 @@ export async function sendStickerMessage(
   });
 }
 
+function createSafeStickerDataUrl(label: string) {
+  const safeLabel = label.replace(/[<>&"]/g, "");
+  return `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><rect x="12" y="12" width="136" height="136" rx="34" fill="#059669"/><text x="80" y="88" text-anchor="middle" font-family="Arial" font-size="24" font-weight="700" fill="white">${safeLabel}</text></svg>`)}`;
+}
+
 export async function listMessages(chatId: string, userId: string) {
   const member = await prisma.chatMember.findUnique({
     where: { chatId_userId: { chatId, userId } },
@@ -467,6 +495,7 @@ export async function listMessages(chatId: string, userId: string) {
   if (!member || member.status !== "ACTIVE") {
     throw new Error("You are not a member of this chat.");
   }
+  await assertAnonymousChatVisible(chatId);
 
   const canSeePending = member.role === "OWNER" || member.role === "ADMIN";
 
@@ -596,6 +625,7 @@ export async function addReaction(input: unknown, userId: string) {
   const data = reactionSchema.parse(input);
   await assertChatMember(userId, data.chatId);
   await assertAnonymousChatAllowed(data.chatId);
+  await assertNotAnonymousChat(data.chatId, "Reactions are disabled in anonymous mode for safety.");
   await assertGroupActionAllowed(data.chatId, userId, "react");
 
   const targetMessage = await prisma.message.findFirst({
@@ -637,6 +667,7 @@ export async function removeReaction(input: unknown, userId: string) {
   const data = reactionSchema.parse(input);
   await assertChatMember(userId, data.chatId);
   await assertAnonymousChatAllowed(data.chatId);
+  await assertNotAnonymousChat(data.chatId, "Reactions are disabled in anonymous mode for safety.");
   await assertGroupActionAllowed(data.chatId, userId, "react");
 
   const targetMessage = await prisma.message.findFirst({

@@ -4,7 +4,8 @@ import {
   acceptAnonymousConversation,
   blockAnonymousConversation,
   rejectAnonymousConversation,
-  reportAnonymousConversation
+  reportAnonymousConversation,
+  revealAnonymousIdentities
 } from "@/features/anonymous/anonymous.service";
 import { anonymousActionSchema } from "@/features/anonymous/anonymous.validators";
 import { apiError } from "@/server/security/api";
@@ -47,6 +48,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
     if (action === "BLOCK") {
       const anonymous = await blockAnonymousConversation(chatId, session.userId, body.note);
+      return NextResponse.json({ anonymous });
+    }
+    if (action === "REVEAL") {
+      const anonymous = await revealAnonymousIdentities(chatId, session.userId);
       return NextResponse.json({ anonymous });
     }
 

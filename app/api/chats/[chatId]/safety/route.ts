@@ -42,7 +42,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const body = await readValidatedJson(request, conversationSafetySchema);
     const result = await updateConversationSafety(chatId, session.userId, body);
 
-    return NextResponse.json({ safety: result.state, event: result.event, reportId: result.reportId });
+    return NextResponse.json({
+      safety: result.state,
+      event: result.event,
+      reportId: result.reportId,
+      anonymousReveal: result.anonymousReveal
+    });
   } catch (error) {
     return apiError(error);
   }

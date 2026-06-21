@@ -395,6 +395,7 @@ export function MessengerShell() {
                           <MessageBubble
                             key={message.id}
                             message={message}
+                            anonymousRestricted={Boolean(activeChat.anonymous && activeChat.anonymous.status !== "REVEALED")}
                             onReact={async (emoji) => {
                               if (!message.originalId) return;
                               await realtime.addReaction(activeChat.id, message.originalId, emoji);
@@ -492,6 +493,10 @@ export function MessengerShell() {
           onUpdate={(status) => {
             setSafetyByChat((current) => ({ ...current, [activeChat.id]: status }));
             void realtime.refreshChats();
+          }}
+          onReveal={async () => {
+            await realtime.refreshChats();
+            setSafeModeOpen(false);
           }}
           onEndConversation={() => {
             realtime.hideChat(activeChat.id);
@@ -732,10 +737,11 @@ function AnonymousStartModal({
         </label>
 
         <label className="mt-4 block">
-          <span className="text-sm font-medium">First message</span>
+          <span className="text-sm font-medium">Opening note</span>
+          <span className="ml-2 text-xs text-muted-foreground">Shown with the request before acceptance</span>
           <textarea
             className="mt-2 min-h-28 w-full resize-none rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-            placeholder="Write a respectful anonymous opening message."
+            placeholder="Optional: write a respectful reason for starting this anonymous chat."
             value={message}
             onChange={(event) => setMessage(event.target.value)}
           />
@@ -815,15 +821,12 @@ function AnonymousRequestBanner({
             Expires {new Date(anonymous.expiresAt).toLocaleDateString()}
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => setNote((value) => value ? "" : " ")}>
-          Add note
-        </Button>
       </div>
 
-      {note ? (
+      {anonymous.isReceiver && anonymous.status === "PENDING" ? (
         <textarea
           className="mt-3 min-h-20 w-full resize-none rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-          placeholder="Optional note for report/block context."
+          placeholder="Optional note for Report or Block only. It is not sent when you accept."
           value={note}
           onChange={(event) => setNote(event.target.value)}
         />
@@ -853,11 +856,13 @@ function SafeModeModal({
   chat,
   onClose,
   onUpdate,
+  onReveal,
   onEndConversation
 }: {
   chat: Chat;
   onClose: () => void;
   onUpdate: (status: Chat["safetyStatus"]) => void;
+  onReveal: () => Promise<void>;
   onEndConversation: () => void;
 }) {
   const { toast } = useToast();
@@ -865,6 +870,34 @@ function SafeModeModal({
   const [status, setStatus] = useState<Chat["safetyStatus"]>(chat.safetyStatus);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
+  const [revealEligible, setRevealEligible] = useState(false);
+  const [bothSafe, setBothSafe] = useState(false);
+  const [history, setHistory] = useState<Array<{ id: string; status: Chat["safetyStatus"]; action?: string | null; createdAt: string | Date }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSafety() {
+      try {
+        const response = await fetch(`/api/chats/${chat.id}/safety`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) return;
+        if (cancelled) return;
+        setStatus(data.safety?.status ?? chat.safetyStatus);
+        setHistory(data.safety?.history ?? []);
+        setRevealEligible(Boolean(data.safety?.anonymousReveal?.eligible));
+        setBothSafe(Boolean(data.safety?.anonymousReveal?.bothSafe));
+      } catch {
+        // The menu still works without history.
+      }
+    }
+
+    void loadSafety();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chat.id, chat.safetyStatus]);
 
   async function saveSafety(nextStatus: Chat["safetyStatus"], action?: "REPORT" | "BLOCK" | "END_CONVERSATION") {
     setSaving(action ?? nextStatus);
@@ -885,6 +918,11 @@ function SafeModeModal({
 
       setStatus(nextStatus);
       onUpdate(nextStatus);
+      setRevealEligible(Boolean(data.anonymousReveal?.eligible));
+      setBothSafe(Boolean(data.anonymousReveal?.bothSafe));
+      if (data.event) {
+        setHistory((current) => [data.event, ...current].slice(0, 5));
+      }
 
       if (action === "END_CONVERSATION") {
         toast({ kind: "success", title: "Conversation ended" });
@@ -896,11 +934,40 @@ function SafeModeModal({
         kind: "success",
         title: action === "BLOCK" ? "User blocked" : action === "REPORT" ? "Report sent" : "Safe Mode updated"
       });
-      sounds.play(action === "BLOCK" || action === "REPORT" ? "report" : nextStatus === "SAFE" ? "safe" : "notification");
+      sounds.play(
+        nextStatus === "UNSAFE"
+          ? "warning"
+          : action === "BLOCK" || action === "REPORT"
+            ? "report"
+            : nextStatus === "SAFE"
+              ? "safe"
+              : "notification"
+      );
     } catch (error) {
       toast({
         kind: "error",
         title: "Safe Mode failed",
+        description: getErrorMessage(error)
+      });
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function revealIdentity() {
+    setSaving("REVEAL");
+    try {
+      const updated = await updateAnonymousRequest(chat.id, "REVEAL");
+      if (!updated || updated.status !== "REVEALED") {
+        throw new Error("Could not reveal identities.");
+      }
+      toast({ kind: "success", title: "Identity revealed" });
+      sounds.play("safe");
+      await onReveal();
+    } catch (error) {
+      toast({
+        kind: "error",
+        title: "Reveal failed",
         description: getErrorMessage(error)
       });
     } finally {
@@ -927,21 +994,21 @@ function SafeModeModal({
         <div className="mt-5 grid gap-2 sm:grid-cols-3">
           <SafetyChoice
             active={status === "SAFE"}
-            title="Safe"
+            title="I feel safe"
             description="This conversation feels okay."
             onClick={() => void saveSafety("SAFE")}
             disabled={Boolean(saving)}
           />
           <SafetyChoice
             active={status === "UNSURE"}
-            title="Unsure"
+            title="I am unsure"
             description="Something feels unclear."
             onClick={() => void saveSafety("UNSURE")}
             disabled={Boolean(saving)}
           />
           <SafetyChoice
             active={status === "UNSAFE"}
-            title="Unsafe"
+            title="I feel unsafe"
             description="I need help or distance."
             onClick={() => void saveSafety("UNSAFE")}
             disabled={Boolean(saving)}
@@ -974,6 +1041,36 @@ function SafeModeModal({
               <Button disabled={Boolean(saving)} variant="destructive" onClick={() => void saveSafety("UNSAFE", "END_CONVERSATION")}>
                 {saving === "END_CONVERSATION" ? "Ending" : "End Conversation"}
               </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {chat.anonymous && chat.anonymous.status === "ACCEPTED" ? (
+          <div className="mt-5 rounded-lg border border-primary/20 bg-primary/5 p-4">
+            <p className="font-medium">Anonymous identity reveal</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {revealEligible
+                ? "Both people marked this chat Safe. You can now choose to reveal identities."
+                : bothSafe
+                  ? "Reveal is almost ready."
+                  : "Identity reveal unlocks only after both people mark this chat Safe."}
+            </p>
+            <Button className="mt-4" disabled={!revealEligible || Boolean(saving)} onClick={() => void revealIdentity()}>
+              {saving === "REVEAL" ? "Revealing" : "Reveal identity"}
+            </Button>
+          </div>
+        ) : null}
+
+        {history.length > 0 ? (
+          <div className="mt-5 rounded-lg border border-white/20 bg-background/60 p-4">
+            <p className="font-medium">Safety history</p>
+            <div className="mt-3 space-y-2">
+              {history.slice(0, 5).map((event) => (
+                <div className="flex items-center justify-between gap-3 text-sm" key={event.id}>
+                  <span>{formatSafetyStatus(event.status)}{event.action ? ` - ${formatSafetyAction(event.action)}` : ""}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{formatRelativeTime(event.createdAt)}</span>
+                </div>
+              ))}
             </div>
           </div>
         ) : null}
@@ -1367,7 +1464,14 @@ function ChatHeader({
         </Button>
         <Avatar initials={chat.initials} accent={chat.accent} online={chat.online} />
         <div className="min-w-0">
-          <h2 className="truncate font-semibold tracking-tight">{chat.name}</h2>
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="truncate font-semibold tracking-tight">{chat.name}</h2>
+            {anonymousRestricted ? (
+              <span className="shrink-0 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                Anonymous Safe Chat
+              </span>
+            ) : null}
+          </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {chat.online ? (
               <span className="size-2 rounded-full bg-emerald-500" />
@@ -1477,6 +1581,7 @@ function DateDivider({ label }: { label: string }) {
 
 function MessageBubble({
   message,
+  anonymousRestricted,
   onReact,
   onEdit,
   onDelete,
@@ -1485,6 +1590,7 @@ function MessageBubble({
   onRetry
 }: {
   message: Message;
+  anonymousRestricted?: boolean;
   onReact: (emoji: string) => Promise<void>;
   onEdit: (body: string) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -1504,6 +1610,7 @@ function MessageBubble({
   const { toast } = useToast();
   const canManage = isMine && !message.deleted && !message.failed;
   const canReport = !isMine && !message.deleted && !message.failed;
+  const canReact = !anonymousRestricted && !message.deleted && !message.failed;
 
   function clearLongPressTimer() {
     if (longPressTimer.current) {
@@ -1685,6 +1792,7 @@ function MessageBubble({
         {actionsOpen ? (
           <MessageActionMenu
             busy={busy}
+            canReact={canReact}
             canManage={canManage}
             canReport={canReport}
             onClose={() => setActionsOpen(false)}
@@ -1761,9 +1869,11 @@ function MessageBubble({
           ) : null}
           {!message.deleted && !message.failed ? (
             <>
-              <button className="transition hover:text-primary disabled:opacity-60" disabled={busy} onClick={() => setReactionOpen((value) => !value)} type="button">
-                {busy ? "Working" : "React"}
-              </button>
+              {canReact ? (
+                <button className="transition hover:text-primary disabled:opacity-60" disabled={busy} onClick={() => setReactionOpen((value) => !value)} type="button">
+                  {busy ? "Working" : "React"}
+                </button>
+              ) : null}
               {canManage ? (
                 <>
                   <button className="transition hover:text-primary" disabled={busy} onClick={() => setEditing(true)} type="button">
@@ -1825,6 +1935,7 @@ function ReactionPicker({
 
 function MessageActionMenu({
   busy,
+  canReact,
   canManage,
   canReport,
   onClose,
@@ -1834,6 +1945,7 @@ function MessageActionMenu({
   onReport
 }: {
   busy: boolean;
+  canReact: boolean;
   canManage: boolean;
   canReport: boolean;
   onClose: () => void;
@@ -1844,9 +1956,11 @@ function MessageActionMenu({
 }) {
   return (
     <div className="absolute bottom-full z-20 mb-2 min-w-48 rounded-2xl border border-white/30 bg-background/95 p-1 text-sm shadow-2xl shadow-black/15 backdrop-blur">
-      <button className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-muted" disabled={busy} type="button" onClick={onReact}>
-        React
-      </button>
+      {canReact ? (
+        <button className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-muted" disabled={busy} type="button" onClick={onReact}>
+          React
+        </button>
+      ) : null}
       {canManage ? (
         <>
           <button className="w-full rounded-xl px-3 py-2 text-left transition hover:bg-muted" disabled={busy} type="button" onClick={onEdit}>
@@ -2035,6 +2149,8 @@ function Composer({
   const [panel, setPanel] = useState<"emoji" | "gif" | "sticker" | null>(null);
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [gifSending, setGifSending] = useState(false);
+  const [stickerSending, setStickerSending] = useState(false);
   const { toast } = useToast();
   const sounds = useSoundSystem();
 
@@ -2101,6 +2217,36 @@ function Composer({
     onTypingStop();
   }
 
+  function blockedInAnonymous(tool: string) {
+    toast({
+      kind: "info",
+      title: `${tool} disabled`,
+      description: "Anonymous Safe Chat allows text only for now."
+    });
+  }
+
+  function pickFile(nextFile?: File | null) {
+    if (textOnly) {
+      blockedInAnonymous("Media");
+      return;
+    }
+    if (!nextFile) return;
+
+    const result = validateComposerFile(nextFile);
+    if (!result.ok) {
+      toast({
+        kind: result.comingSoon ? "info" : "error",
+        title: result.comingSoon ? "Coming soon" : "File not allowed",
+        description: result.error
+      });
+      return;
+    }
+
+    setPanel(null);
+    setFile(nextFile);
+    setFileKindOverride(null);
+  }
+
   return (
     <footer className="shrink-0 border-t border-white/20 bg-card/78 px-3 py-3 shadow-[0_-12px_40px_rgba(0,0,0,0.06)] backdrop-blur-2xl sm:px-5">
       <div className="mx-auto flex max-w-4xl flex-col gap-2 sm:flex-row sm:items-end">
@@ -2109,11 +2255,10 @@ function Composer({
             id="chat-file-input"
             className="hidden"
             type="file"
-            accept="image/*,video/*,audio/*,.pdf,.txt,.doc,.docx,.xls,.xlsx"
+            accept="image/jpeg,image/png,image/webp,image/gif"
             onChange={(event) => {
-              if (textOnly) return;
-              setFile(event.target.files?.[0] ?? null);
-              setFileKindOverride(null);
+              pickFile(event.target.files?.[0] ?? null);
+              event.currentTarget.value = "";
             }}
           />
           <input
@@ -2122,13 +2267,20 @@ function Composer({
             type="file"
             accept="audio/*"
             onChange={(event) => {
-              if (textOnly) return;
-              setFile(event.target.files?.[0] ?? null);
-              setFileKindOverride("voice");
+              if (textOnly) {
+                blockedInAnonymous("Voice messages");
+              } else {
+                toast({
+                  kind: "info",
+                  title: "Coming soon",
+                  description: "Voice message upload will be enabled after recording tools are connected."
+                });
+              }
+              event.currentTarget.value = "";
             }}
           />
-          <Button asChild variant="ghost" size="icon" aria-label="Attach file" title={textOnly ? "Media sharing is disabled in anonymous mode for safety." : undefined} aria-disabled={textOnly}>
-            <label className={textOnly ? "pointer-events-none opacity-50" : undefined} htmlFor="chat-file-input">
+          <Button asChild variant="ghost" size="icon" aria-label="Attach image" title={textOnly ? "Media sharing is disabled in anonymous mode for safety." : "Attach image"}>
+            <label htmlFor="chat-file-input">
             <Paperclip className="size-5" />
             </label>
           </Button>
@@ -2136,12 +2288,12 @@ function Composer({
             <Smile className="size-5" />
           </Button>
           <span title={textOnly ? "GIFs are disabled in anonymous mode for safety." : undefined}>
-            <Button variant="ghost" size="icon" aria-label="Send GIF" disabled={textOnly} onClick={() => setPanel(panel === "gif" ? null : "gif")}>
+            <Button variant="ghost" size="icon" aria-label="Send GIF" onClick={() => textOnly ? blockedInAnonymous("GIFs") : setPanel(panel === "gif" ? null : "gif")}>
               <Gift className="size-5" />
             </Button>
           </span>
           <span title={textOnly ? "Stickers are disabled in anonymous mode for safety." : undefined}>
-            <Button variant="ghost" size="icon" aria-label="Send sticker" disabled={textOnly} onClick={() => setPanel(panel === "sticker" ? null : "sticker")}>
+            <Button variant="ghost" size="icon" aria-label="Send sticker" onClick={() => textOnly ? blockedInAnonymous("Stickers") : setPanel(panel === "sticker" ? null : "sticker")}>
               <Sticker className="size-5" />
             </Button>
           </span>
@@ -2159,11 +2311,16 @@ function Composer({
             />
           ) : null}
           {panel === "emoji" ? (
-            <EmojiPanel onPick={(emoji) => setBody((value) => `${value}${emoji}`)} />
+            <EmojiPanel onPick={(emoji) => {
+              setBody((value) => `${value}${emoji}`);
+              onTypingStart();
+            }} />
           ) : null}
           {panel === "gif" ? (
             <GifPanel
+              sending={gifSending}
               onSend={(gif) => {
+                setGifSending(true);
                 void onSendGif(gif.url, gif.title)
                   .then(() => {
                     setPanel(null);
@@ -2175,13 +2332,18 @@ function Composer({
                       title: "GIF failed",
                       description: getErrorMessage(error)
                     });
+                  })
+                  .finally(() => {
+                    setGifSending(false);
                   });
               }}
             />
           ) : null}
           {panel === "sticker" ? (
             <StickerPanel
+              sending={stickerSending}
               onSend={(stickerId) => {
+                setStickerSending(true);
                 void onSendSticker(stickerId)
                   .then(() => {
                     setPanel(null);
@@ -2193,6 +2355,9 @@ function Composer({
                       title: "Sticker failed",
                       description: getErrorMessage(error)
                     });
+                  })
+                  .finally(() => {
+                    setStickerSending(false);
                   });
               }}
             />
@@ -2219,8 +2384,8 @@ function Composer({
             />
           </div>
 
-          <Button className="rounded-2xl" variant="ghost" size="icon" aria-label="Record voice message" title={textOnly ? "Voice messages are disabled in anonymous mode for safety." : undefined} aria-disabled={textOnly}>
-            <label className={textOnly ? "pointer-events-none opacity-50" : undefined} htmlFor="chat-voice-input">
+          <Button className="rounded-2xl" variant="ghost" size="icon" aria-label="Record voice message" title={textOnly ? "Voice messages are disabled in anonymous mode for safety." : "Voice messages are coming soon"}>
+            <label htmlFor="chat-voice-input">
               <Mic className="size-5" />
             </label>
           </Button>
@@ -2284,7 +2449,7 @@ async function reportMessage(chatId: string, message: Message, reason: string, d
       type: "MESSAGE",
       chatId,
       messageId: message.originalId,
-      reportedUserId: message.senderId,
+      ...(message.senderId ? { reportedUserId: message.senderId } : {}),
       reason,
       details
     })
@@ -2309,7 +2474,7 @@ async function reviewPendingMessage(chatId: string, messageId: string, approved:
 
 async function updateAnonymousRequest(
   chatId: string,
-  action: "ACCEPT" | "REJECT" | "REPORT" | "BLOCK",
+  action: "ACCEPT" | "REJECT" | "REPORT" | "BLOCK" | "REVEAL",
   note?: string
 ) {
   const response = await fetch(`/api/chats/${chatId}/anonymous`, {
@@ -2333,6 +2498,35 @@ function detectAttachmentKind(file: File) {
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "audio";
   return "document";
+}
+
+function validateComposerFile(file: File): { ok: true } | { ok: false; error: string; comingSoon?: boolean } {
+  const supportedImages = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+  const maxImageBytes = 12 * 1024 * 1024;
+
+  if (!file.type.startsWith("image/")) {
+    return {
+      ok: false,
+      comingSoon: true,
+      error: "Image upload is ready now. Documents, audio, and video are coming soon."
+    };
+  }
+
+  if (!supportedImages.has(file.type)) {
+    return {
+      ok: false,
+      error: "Use a JPG, PNG, WebP, or GIF image."
+    };
+  }
+
+  if (file.size > maxImageBytes) {
+    return {
+      ok: false,
+      error: "Image must be 12 MB or smaller."
+    };
+  }
+
+  return { ok: true };
 }
 
 function FilePreview({
@@ -2410,15 +2604,15 @@ function AttachmentPreview({ attachments }: { attachments: NonNullable<Message["
 
 function EmojiPanel({ onPick }: { onPick: (emoji: string) => void }) {
   const emojis = [
-    "🙂", "😊", "😄", "😂", "🤲", "🌙", "⭐", "✨",
-    "❤️", "💚", "👍", "👏", "🙏", "✅", "🎉", "☕",
-    "📌", "📎", "📚", "🕌", "🌿", "💬", "🔒", "🛡️"
+    "\uD83D\uDE42", "\uD83D\uDE0A", "\uD83D\uDE04", "\uD83D\uDE02", "\uD83E\uDD32", "\uD83C\uDF19", "\u2B50", "\u2728",
+    "\u2764\uFE0F", "\uD83D\uDC9A", "\uD83D\uDC4D", "\uD83D\uDC4F", "\uD83D\uDE4F", "\u2705", "\uD83C\uDF89", "\u2615",
+    "\uD83D\uDCCC", "\uD83D\uDCCE", "\uD83D\uDCDA", "\uD83D\uDD4C", "\uD83C\uDF3F", "\uD83D\uDCAC", "\uD83D\uDD12", "\uD83D\uDEE1\uFE0F"
   ];
 
   return (
     <div className="flex flex-wrap gap-2 rounded-2xl border border-white/30 bg-background/78 p-2 shadow-lg shadow-black/5 backdrop-blur">
       {emojis.map((emoji) => (
-        <button className="rounded-xl px-2 py-1 text-lg transition hover:bg-muted" key={emoji} onClick={() => onPick(emoji)} type="button">
+        <button className="rounded-xl px-2 py-1 text-lg transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" key={emoji} onClick={() => onPick(emoji)} type="button">
           {emoji}
         </button>
       ))}
@@ -2426,18 +2620,30 @@ function EmojiPanel({ onPick }: { onPick: (emoji: string) => void }) {
   );
 }
 
-function GifPanel({ onSend }: { onSend: (gif: { url: string; title: string }) => void }) {
+function GifPanel({
+  sending,
+  onSend
+}: {
+  sending: boolean;
+  onSend: (gif: { url: string; title: string }) => void;
+}) {
   const [query, setQuery] = useState("");
   const [gifs, setGifs] = useState<Array<{ title: string; url: string; previewUrl?: string }>>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadGifs() {
-      const response = await fetch(`/api/gifs/search?q=${encodeURIComponent(query)}`);
-      if (!response.ok) return;
-      const data = await response.json();
-      if (!cancelled) setGifs(data.gifs);
+      setLoading(true);
+      try {
+        const response = await fetch(`/api/gifs/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled) setGifs(data.gifs);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
     void loadGifs();
@@ -2456,32 +2662,55 @@ function GifPanel({ onSend }: { onSend: (gif: { url: string; title: string }) =>
         onChange={(event) => setQuery(event.target.value)}
       />
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {gifs.map((gif) => (
-          <button className="overflow-hidden rounded-xl border border-white/30 bg-card/70 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md" key={gif.url} onClick={() => onSend(gif)} type="button">
-            <img className="h-24 w-full object-cover" src={gif.previewUrl ?? gif.url} alt={gif.title} />
-            <span className="block truncate px-2 py-1 text-xs">{gif.title}</span>
-          </button>
-        ))}
+        {loading ? (
+          Array.from({ length: 3 }).map((_, index) => (
+            <Skeleton className="h-28 rounded-xl" key={index} />
+          ))
+        ) : gifs.length === 0 ? (
+          <p className="col-span-full px-2 py-3 text-sm text-muted-foreground">No GIFs found</p>
+        ) : (
+          gifs.map((gif) => (
+            <button className="overflow-hidden rounded-xl border border-white/30 bg-card/70 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md disabled:opacity-60" disabled={sending} key={gif.url} onClick={() => onSend(gif)} type="button">
+              <img className="h-24 w-full object-cover" src={gif.previewUrl ?? gif.url} alt={gif.title} />
+              <span className="flex items-center justify-between gap-2 px-2 py-1 text-xs">
+                <span className="truncate">{gif.title}</span>
+                {sending ? <Loader2 className="size-3 animate-spin" /> : null}
+              </span>
+            </button>
+          ))
+        )}
       </div>
     </div>
   );
 }
 
-function StickerPanel({ onSend }: { onSend: (stickerId: string) => void }) {
+function StickerPanel({
+  sending,
+  onSend
+}: {
+  sending: boolean;
+  onSend: (stickerId: string) => void;
+}) {
   const [stickers, setStickers] = useState<Array<{ id: string; name: string; storageKey: string }>>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadStickers() {
-      const response = await fetch("/api/stickers");
-      if (!response.ok) return;
-      const data = await response.json();
-      const nextStickers = data.packs.flatMap(
-        (pack: { stickers: Array<{ id: string; name: string; storageKey: string }> }) =>
-          pack.stickers
-      );
-      if (!cancelled) setStickers(nextStickers);
+      setLoading(true);
+      try {
+        const response = await fetch("/api/stickers");
+        if (!response.ok) return;
+        const data = await response.json();
+        const nextStickers = data.packs.flatMap(
+          (pack: { stickers: Array<{ id: string; name: string; storageKey: string }> }) =>
+            pack.stickers
+        );
+        if (!cancelled) setStickers(nextStickers);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
     void loadStickers();
@@ -2493,11 +2722,15 @@ function StickerPanel({ onSend }: { onSend: (stickerId: string) => void }) {
 
   return (
     <div className="flex gap-2 overflow-x-auto rounded-2xl border border-white/30 bg-background/78 p-2 shadow-lg shadow-black/5 backdrop-blur">
-      {stickers.length === 0 ? (
+      {loading ? (
+        Array.from({ length: 4 }).map((_, index) => (
+          <Skeleton className="size-16 rounded-xl" key={index} />
+        ))
+      ) : stickers.length === 0 ? (
         <p className="px-2 py-1 text-sm text-muted-foreground">No stickers yet</p>
       ) : (
         stickers.map((sticker) => (
-          <button className="rounded-xl border border-white/30 bg-card/70 p-2 text-sm transition hover:-translate-y-0.5 hover:bg-muted" key={sticker.id} onClick={() => onSend(sticker.id)} type="button">
+          <button className="rounded-xl border border-white/30 bg-card/70 p-2 text-sm transition hover:-translate-y-0.5 hover:bg-muted disabled:opacity-60" disabled={sending} key={sticker.id} onClick={() => onSend(sticker.id)} type="button">
             <img className="size-14 object-contain" src={sticker.storageKey.startsWith("data:") ? sticker.storageKey : `/api/files/${sticker.storageKey}`} alt={sticker.name} />
           </button>
         ))
@@ -2505,7 +2738,6 @@ function StickerPanel({ onSend }: { onSend: (stickerId: string) => void }) {
     </div>
   );
 }
-
 function MediaGallery({ messages }: { messages: Message[] }) {
   const attachments = messages.flatMap((message) => message.attachments ?? []);
 
@@ -2561,6 +2793,13 @@ function formatSafetyStatus(status: Chat["safetyStatus"]) {
   if (status === "UNSAFE") return "Unsafe";
   if (status === "UNSURE") return "Unsure";
   return "Safe";
+}
+
+function formatSafetyAction(action: string) {
+  if (action === "END_CONVERSATION") return "Ended conversation";
+  if (action === "REPORT") return "Reported";
+  if (action === "BLOCK") return "Blocked";
+  return action.toLowerCase();
 }
 
 function isRecentlyOnline(value?: string | Date | null) {

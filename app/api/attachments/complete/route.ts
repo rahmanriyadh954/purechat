@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
     const body = await readValidatedJson(request, completeUploadSchema);
     const message = await completeAttachmentMessage(body, session.userId);
 
-    return NextResponse.json({ message: presentMessage(message) });
+    return NextResponse.json({ message: presentMessage(message, session.userId) });
   } catch (error) {
     return apiError(error);
   }

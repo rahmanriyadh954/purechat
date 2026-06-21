@@ -13,9 +13,28 @@ import { apiError, readValidatedJson } from "@/server/security/api";
 export async function GET() {
   try {
     const session = await requireCurrentSession();
+    const now = new Date();
     const chats = await prisma.chat.findMany({
       where: {
         deletedAt: null,
+        AND: [
+          {
+            OR: [
+              { anonymousRequest: null },
+              {
+                anonymousRequest: {
+                  is: {
+                    status: { in: ["PENDING", "ACCEPTED", "REVEALED"] },
+                    OR: [
+                      { status: { not: "PENDING" } },
+                      { expiresAt: { gt: now } }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
         members: {
           some: {
             userId: session.userId,
@@ -120,7 +139,9 @@ export async function POST(request: NextRequest) {
       const body = createAnonymousConversationSchema.parse(rawBody);
       const chat = await createAnonymousConversation(body, session.userId);
 
-      return NextResponse.json({ chat }, { status: 201 });
+      return NextResponse.json({
+        chat: presentChat(chat, session.userId)
+      }, { status: 201 });
     }
 
     if (rawBody?.mode === "direct") {

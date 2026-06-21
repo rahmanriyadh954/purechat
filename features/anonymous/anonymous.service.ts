@@ -69,6 +69,23 @@ export async function createAnonymousConversation(input: unknown, senderId: stri
         }
       },
       include: {
+        members: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+                lastSeenAt: true
+              }
+            }
+          }
+        },
+        messages: {
+          orderBy: { createdAt: "desc" },
+          take: 1
+        },
         anonymousRequest: true
       }
     });
@@ -120,7 +137,6 @@ export async function acceptAnonymousConversation(chatId: string, userId: string
     }
   });
 
-  await maybeRevealAnonymousIdentities(chatId);
   await writeAuditLog({
     actorId: userId,
     action: "ANONYMOUS_CONVERSATION_ACCEPTED",
@@ -143,8 +159,8 @@ export async function rejectAnonymousConversation(chatId: string, userId: string
     }
   });
 
-  await prisma.chatMember.update({
-    where: { chatId_userId: { chatId, userId } },
+  await prisma.chatMember.updateMany({
+    where: { chatId },
     data: { isArchived: true }
   });
 
@@ -187,6 +203,11 @@ export async function reportAnonymousConversation(chatId: string, userId: string
       }
     });
 
+    await tx.chatMember.updateMany({
+      where: { chatId },
+      data: { isArchived: true }
+    });
+
     return { anonymous, report };
   });
 
@@ -223,8 +244,8 @@ export async function blockAnonymousConversation(chatId: string, userId: string,
       }
     });
 
-    await tx.chatMember.update({
-      where: { chatId_userId: { chatId, userId } },
+    await tx.chatMember.updateMany({
+      where: { chatId },
       data: { isArchived: true }
     });
 
@@ -247,7 +268,7 @@ export async function blockAnonymousConversation(chatId: string, userId: string,
   return anonymous;
 }
 
-export async function maybeRevealAnonymousIdentities(chatId: string) {
+export async function getAnonymousRevealStatus(chatId: string) {
   const request = await prisma.anonymousConversation.findUnique({
     where: { chatId },
     include: {
@@ -259,7 +280,13 @@ export async function maybeRevealAnonymousIdentities(chatId: string) {
     }
   });
 
-  if (!request || request.revealedAt || !request.approvedAt) return request;
+  if (!request) {
+    return {
+      anonymous: null,
+      eligible: false,
+      bothSafe: false
+    };
+  }
 
   const safeUserIds = new Set(
     request.chat.safetyStates
@@ -267,15 +294,42 @@ export async function maybeRevealAnonymousIdentities(chatId: string) {
       .map((state) => state.userId)
   );
   const bothSafe = safeUserIds.has(request.senderId) && safeUserIds.has(request.receiverId);
-  if (!bothSafe) return request;
 
-  return prisma.anonymousConversation.update({
+  return {
+    anonymous: request,
+    eligible: Boolean(request.approvedAt && !request.revealedAt && bothSafe),
+    bothSafe
+  };
+}
+
+export async function revealAnonymousIdentities(chatId: string, userId: string) {
+  await assertChatMember(userId, chatId);
+  const revealStatus = await getAnonymousRevealStatus(chatId);
+  const request = revealStatus.anonymous;
+
+  if (!request) {
+    throw new Error("Anonymous request not found.");
+  }
+  if (!revealStatus.eligible) {
+    throw new Error("Both people must mark this chat Safe before identity reveal.");
+  }
+
+  const anonymous = await prisma.anonymousConversation.update({
     where: { id: request.id },
     data: {
       status: "REVEALED",
       revealedAt: new Date()
     }
   });
+
+  await writeAuditLog({
+    actorId: userId,
+    action: "ANONYMOUS_IDENTITIES_REVEALED",
+    entityType: "Chat",
+    entityId: chatId
+  });
+
+  return anonymous;
 }
 
 export async function expireAnonymousConversations() {
@@ -284,7 +338,7 @@ export async function expireAnonymousConversations() {
     where: {
       expiresAt: { lt: now },
       revealedAt: null,
-      status: { in: ["PENDING", "ACCEPTED"] }
+      status: "PENDING"
     },
     select: { id: true, chatId: true }
   });
@@ -336,6 +390,19 @@ async function getAnonymousRequestForReceiver(chatId: string, receiverId: string
   }
   if (request.receiverId !== receiverId) {
     throw new Error("Only the receiver can do this.");
+  }
+  if (request.status === "PENDING" && request.expiresAt < new Date()) {
+    await prisma.$transaction(async (tx) => {
+      await tx.anonymousConversation.update({
+        where: { id: request.id },
+        data: { status: "EXPIRED" }
+      });
+      await tx.chatMember.updateMany({
+        where: { chatId },
+        data: { isArchived: true }
+      });
+    });
+    throw new Error("This anonymous request has expired.");
   }
   if (request.status !== "PENDING" && request.status !== "ACCEPTED") {
     throw new Error("This anonymous request is already closed.");

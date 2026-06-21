@@ -28,7 +28,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     );
     const message = await editMessage({ ...body, chatId, messageId }, session.userId);
 
-    return NextResponse.json({ message: presentMessage(message) });
+    return NextResponse.json({ message: presentMessage(message, session.userId) });
   } catch (error) {
     return apiError(error);
   }
@@ -41,7 +41,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const data = messageIdSchema.parse({ chatId, messageId });
     const message = await deleteMessage(data, session.userId);
 
-    return NextResponse.json({ message: presentMessage(message) });
+    return NextResponse.json({ message: presentMessage(message, session.userId) });
   } catch (error) {
     return apiError(error);
   }

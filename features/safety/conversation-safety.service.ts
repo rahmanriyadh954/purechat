@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { maybeRevealAnonymousIdentities } from "@/features/anonymous/anonymous.service";
+import { getAnonymousRevealStatus } from "@/features/anonymous/anonymous.service";
 import { assertChatMember } from "@/server/security/permissions";
 import { writeAuditLog } from "@/server/security/audit";
 import { conversationSafetySchema } from "./conversation-safety.validators";
@@ -28,10 +28,17 @@ export async function getConversationSafety(chatId: string, userId: string) {
     })
   ]);
 
+  const revealStatus = await getAnonymousRevealStatus(chatId);
+
   return {
     status: state?.status ?? "SAFE",
     updatedAt: state?.updatedAt ?? null,
-    history
+    history,
+    anonymousReveal: {
+      eligible: revealStatus.eligible,
+      bothSafe: revealStatus.bothSafe,
+      revealed: Boolean(revealStatus.anonymous?.revealedAt)
+    }
   };
 }
 
@@ -156,7 +163,14 @@ export async function updateConversationSafety(chatId: string, userId: string, i
     }
   });
 
-  await maybeRevealAnonymousIdentities(chatId);
+  const revealStatus = await getAnonymousRevealStatus(chatId);
 
-  return result;
+  return {
+    ...result,
+    anonymousReveal: {
+      eligible: revealStatus.eligible,
+      bothSafe: revealStatus.bothSafe,
+      revealed: Boolean(revealStatus.anonymous?.revealedAt)
+    }
+  };
 }

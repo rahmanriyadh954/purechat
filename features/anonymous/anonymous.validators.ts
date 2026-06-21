@@ -6,5 +6,6 @@ export const createAnonymousConversationSchema = z.object({
 });
 
 export const anonymousActionSchema = z.object({
+  action: z.enum(["ACCEPT", "REJECT", "REPORT", "BLOCK", "REVEAL"]).optional(),
   note: z.string().trim().max(500).optional()
 });
