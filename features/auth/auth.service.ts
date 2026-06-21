@@ -212,8 +212,17 @@ export async function loginWithPassword(input: unknown, meta: RequestMeta) {
       ],
       deletedAt: null
     },
-    include: {
-      profile: true
+    select: {
+      id: true,
+      email: true,
+      phone: true,
+      passwordHash: true,
+      status: true,
+      profile: {
+        select: {
+          twoFactorEnabled: true
+        }
+      }
     }
   });
 

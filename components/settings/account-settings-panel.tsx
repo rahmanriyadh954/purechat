@@ -5,7 +5,13 @@ import Link from "next/link";
 import { Camera, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
-import { getSoundSettings, saveSoundSettings, useSoundSystem } from "@/hooks/use-sound-system";
+import {
+  canUseBrowserNotifications,
+  getSoundSettings,
+  requestNotificationPermission,
+  saveSoundSettings,
+  useSoundSystem
+} from "@/hooks/use-sound-system";
 
 type MeResponse = {
   user: {
@@ -82,12 +88,14 @@ export function AccountSettingsPanel() {
     newPassword: ""
   });
   const [soundSettings, setSoundSettings] = useState(getSoundSettings());
+  const [notificationPermission, setNotificationPermission] = useState("default");
 
   const formError = useMemo(() => validateProfileForm(form), [form]);
 
   useEffect(() => {
     void loadMe();
     setSoundSettings(getSoundSettings());
+    setNotificationPermission(canUseBrowserNotifications() ? Notification.permission : "unsupported");
   }, []);
 
   async function loadMe() {
@@ -251,6 +259,33 @@ export function AccountSettingsPanel() {
     toast({ kind: "success", title: "Notification setting saved" });
   }
 
+  async function askForNotifications() {
+    const permission = await requestNotificationPermission();
+    setNotificationPermission(permission);
+    if (permission === "granted") {
+      toast({
+        kind: "success",
+        title: "Notifications enabled",
+        description: "PureChat can now show message notifications when your browser allows it."
+      });
+      sounds.play("notification");
+      return;
+    }
+    if (permission === "denied") {
+      toast({
+        kind: "info",
+        title: "Notifications blocked",
+        description: "You can enable notifications later from your browser settings."
+      });
+      return;
+    }
+    toast({
+      kind: "info",
+      title: "Notifications unavailable",
+      description: "This browser does not support app notifications here."
+    });
+  }
+
   if (loading) {
     return (
       <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
@@ -381,15 +416,34 @@ export function AccountSettingsPanel() {
 
       <section className="rounded-lg border bg-card p-4">
         <h2 className="font-medium">Notifications</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Sounds are generated locally with soft tones. Browser notifications are optional.
+        </p>
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <SoundToggle label="Mute all" checked={soundSettings.muted} onChange={(value) => updateSoundSetting("muted", value)} />
           <SoundToggle label="Message sound" checked={soundSettings.messageSounds} onChange={(value) => updateSoundSetting("messageSounds", value)} />
           <SoundToggle label="Call sound" checked={soundSettings.callSounds} onChange={(value) => updateSoundSetting("callSounds", value)} />
           <SoundToggle label="Warning sound" checked={soundSettings.warningSounds} onChange={(value) => updateSoundSetting("warningSounds", value)} />
         </div>
+        <div className="mt-4 rounded-md border bg-background p-3">
+          <p className="text-sm font-medium">Browser notifications</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Current status: {formatNotificationPermission(notificationPermission)}
+          </p>
+          <Button className="mt-3" variant="secondary" type="button" onClick={() => void askForNotifications()}>
+            Enable notifications
+          </Button>
+        </div>
       </section>
     </div>
   );
+}
+
+function formatNotificationPermission(permission: string) {
+  if (permission === "granted") return "Enabled";
+  if (permission === "denied") return "Blocked";
+  if (permission === "unsupported") return "Not supported";
+  return "Not requested";
 }
 
 const visibilityOptions = [

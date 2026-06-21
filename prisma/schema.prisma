@@ -512,6 +512,7 @@ model ChatMember {
   @@index([userId])
   @@index([chatId])
   @@index([status])
+  @@index([userId, status, isArchived])
 }
 
 model Message {
@@ -543,6 +544,7 @@ model Message {
   pinnedAnnouncements GroupPinnedAnnouncement[]
 
   @@index([chatId, createdAt])
+  @@index([chatId, status, createdAt])
   @@index([senderId])
   @@index([type])
   @@index([status])
@@ -603,6 +605,7 @@ model MessageReadReceipt {
   @@unique([messageId, userId])
   @@index([userId])
   @@index([messageId])
+  @@index([userId, readAt])
   @@index([readAt])
 }
 

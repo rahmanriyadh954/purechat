@@ -21,6 +21,7 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [dragByToast, setDragByToast] = useState<Record<string, { startX: number; currentX: number }>>({});
 
   const toast = useCallback((input: Omit<Toast, "id">) => {
     const id = crypto.randomUUID();
@@ -33,6 +34,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(() => ({ toast }), [toast]);
   const dismiss = useCallback((id: string) => {
     setToasts((current) => current.filter((item) => item.id !== id));
+    setDragByToast((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   }, []);
 
   return (
@@ -42,12 +48,56 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((item) => (
           <div
             className={cn(
-              "flex gap-3 rounded-lg border bg-card p-4 text-sm shadow-xl shadow-black/10",
+              "flex touch-pan-y gap-3 rounded-lg border bg-card p-4 text-sm shadow-xl shadow-black/10 transition-transform",
               item.kind === "success" && "border-emerald-500/30",
               item.kind === "error" && "border-destructive/30",
               item.kind === "info" && "border-accent/30"
             )}
             key={item.id}
+            style={{
+              transform: `translateX(${dragByToast[item.id]?.currentX ?? 0}px)`,
+              opacity: dragByToast[item.id]?.currentX
+                ? Math.max(0.45, 1 - Math.abs(dragByToast[item.id].currentX) / 260)
+                : 1
+            }}
+            onPointerDown={(event) => {
+              setDragByToast((current) => ({
+                ...current,
+                [item.id]: { startX: event.clientX, currentX: 0 }
+              }));
+            }}
+            onPointerMove={(event) => {
+              setDragByToast((current) => {
+                const drag = current[item.id];
+                if (!drag) return current;
+                return {
+                  ...current,
+                  [item.id]: {
+                    ...drag,
+                    currentX: event.clientX - drag.startX
+                  }
+                };
+              });
+            }}
+            onPointerUp={() => {
+              const drag = dragByToast[item.id];
+              if (drag && Math.abs(drag.currentX) > 90) {
+                dismiss(item.id);
+                return;
+              }
+              setDragByToast((current) => {
+                const next = { ...current };
+                delete next[item.id];
+                return next;
+              });
+            }}
+            onPointerCancel={() => {
+              setDragByToast((current) => {
+                const next = { ...current };
+                delete next[item.id];
+                return next;
+              });
+            }}
           >
             {item.kind === "success" ? <CheckCircle2 className="size-5 text-emerald-600" /> : null}
             {item.kind === "error" ? <XCircle className="size-5 text-destructive" /> : null}

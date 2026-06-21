@@ -30,6 +30,7 @@ const defaultSettings: SoundSettings = {
 };
 
 const storageKey = "purechat:sound-settings";
+let soundUnlocked = false;
 
 export function getSoundSettings(): SoundSettings {
   if (typeof window === "undefined") return defaultSettings;
@@ -47,20 +48,51 @@ export function saveSoundSettings(settings: SoundSettings) {
   window.dispatchEvent(new CustomEvent("purechat:sound-settings-changed", { detail: settings }));
 }
 
+export function canUseBrowserNotifications() {
+  return typeof window !== "undefined" && "Notification" in window;
+}
+
+export async function requestNotificationPermission() {
+  if (!canUseBrowserNotifications()) return "unsupported" as const;
+  if (Notification.permission === "granted") return "granted" as const;
+  if (Notification.permission === "denied") return "denied" as const;
+  return Notification.requestPermission();
+}
+
+export function showBrowserNotification(title: string, options?: NotificationOptions) {
+  if (!canUseBrowserNotifications() || Notification.permission !== "granted") return;
+  new Notification(title, {
+    badge: "/icon.png",
+    icon: "/icon.png",
+    ...options
+  });
+}
+
 export function useSoundSystem() {
   const [settings, setSettings] = useState<SoundSettings>(defaultSettings);
 
   useEffect(() => {
     setSettings(getSoundSettings());
+
+    const unlock = () => {
+      soundUnlocked = true;
+    };
     const listener = (event: Event) => {
       const next = (event as CustomEvent<SoundSettings>).detail ?? getSoundSettings();
       setSettings(next);
     };
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
     window.addEventListener("purechat:sound-settings-changed", listener);
-    return () => window.removeEventListener("purechat:sound-settings-changed", listener);
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+      window.removeEventListener("purechat:sound-settings-changed", listener);
+    };
   }, []);
 
   const play = useCallback((name: SoundName) => {
+    if (!soundUnlocked) return;
     const current = getSoundSettings();
     if (current.muted) return;
     if ((name === "messageSent" || name === "messageReceived") && !current.messageSounds) return;
@@ -79,7 +111,9 @@ function playTone(name: SoundName) {
   if (!AudioContextClass) return;
   const context = new AudioContextClass();
   const gain = context.createGain();
-  gain.gain.value = 0.035;
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.025, context.currentTime + 0.015);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.55);
   gain.connect(context.destination);
 
   const now = context.currentTime;
@@ -99,21 +133,21 @@ function playTone(name: SoundName) {
 function getSequence(name: SoundName): Array<[number, number, number]> {
   switch (name) {
     case "messageSent":
-      return [[520, 0, 0.07], [720, 0.07, 0.08]];
+      return [[520, 0, 0.055], [740, 0.07, 0.065]];
     case "messageReceived":
-      return [[660, 0, 0.08], [520, 0.08, 0.08]];
+      return [[640, 0, 0.07], [520, 0.09, 0.075]];
     case "notification":
-      return [[620, 0, 0.08], [820, 0.1, 0.09]];
+      return [[620, 0, 0.07], [820, 0.1, 0.075]];
     case "warning":
-      return [[300, 0, 0.12], [240, 0.14, 0.14]];
+      return [[320, 0, 0.11], [250, 0.14, 0.12]];
     case "incomingCall":
-      return [[520, 0, 0.12], [700, 0.16, 0.12], [520, 0.32, 0.12]];
+      return [[520, 0, 0.11], [700, 0.16, 0.11], [520, 0.32, 0.11]];
     case "callEnded":
-      return [[420, 0, 0.08], [260, 0.09, 0.12]];
+      return [[420, 0, 0.075], [260, 0.1, 0.1]];
     case "safe":
-      return [[540, 0, 0.08], [760, 0.09, 0.1], [920, 0.2, 0.1]];
+      return [[540, 0, 0.065], [760, 0.09, 0.08], [920, 0.2, 0.08]];
     case "report":
-      return [[360, 0, 0.1], [360, 0.12, 0.1]];
+      return [[360, 0, 0.085], [300, 0.12, 0.095]];
     case "tap":
     default:
       return [[680, 0, 0.035]];

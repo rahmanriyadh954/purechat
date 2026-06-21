@@ -54,6 +54,7 @@ export function useWebRtcCalls() {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
   const [callState, setCallState] = useState<"idle" | "ringing" | "active">("idle");
+  const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -70,10 +71,27 @@ export function useWebRtcCalls() {
   useEffect(() => {
     const socket = io({
       path: process.env.NEXT_PUBLIC_SOCKET_IO_PATH ?? "/api/socket",
-      withCredentials: true
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 5000,
+      timeout: 8000
     });
 
     socketRef.current = socket;
+
+    socket.on("connect", () => {
+      setConnected(true);
+    });
+
+    socket.on("disconnect", () => {
+      setConnected(false);
+    });
+
+    socket.on("connect_error", () => {
+      setConnected(false);
+    });
 
     socket.on(socketEvents.callIncoming, ({ call }) => {
       setIncomingCall(call);
@@ -140,30 +158,38 @@ export function useWebRtcCalls() {
     });
 
     return () => {
+      setConnected(false);
       socket.disconnect();
       cleanupMedia();
     };
   }, [iceServers]);
 
+  function getLiveCallSocket() {
+    const socket = socketRef.current;
+    if (!socket?.connected) {
+      throw new Error("Live calls are reconnecting. Please try again in a moment.");
+    }
+    return socket;
+  }
+
   function emitWithAck<T>(event: string, payload: unknown) {
     return new Promise<T>((resolve, reject) => {
-      const socket = socketRef.current;
-      if (!socket?.connected) {
-        reject(new Error("Call connection is offline."));
-        return;
+      try {
+        const socket = getLiveCallSocket();
+        socket.timeout(8000).emit(event, payload, (error: Error | null, result: { ok?: boolean; error?: string } & T) => {
+          if (error) {
+            reject(new Error("Call request timed out."));
+            return;
+          }
+          if (!result?.ok) {
+            reject(new Error(result?.error ?? "Call request failed."));
+            return;
+          }
+          resolve(result);
+        });
+      } catch (error) {
+        reject(error);
       }
-
-      socket.timeout(8000).emit(event, payload, (error: Error | null, result: { ok?: boolean; error?: string } & T) => {
-        if (error) {
-          reject(new Error("Call request timed out."));
-          return;
-        }
-        if (!result?.ok) {
-          reject(new Error(result?.error ?? "Call request failed."));
-          return;
-        }
-        resolve(result);
-      });
     });
   }
 
@@ -223,6 +249,7 @@ export function useWebRtcCalls() {
   async function startCall(input: StartCallInput) {
     setError("");
     try {
+      getLiveCallSocket();
       await getLocalMedia(input.type);
       const result = await emitWithAck<{ call: CallRecord }>(socketEvents.callStart, input);
       setActiveCall(result.call);
@@ -252,6 +279,7 @@ export function useWebRtcCalls() {
     if (!incomingCall) return;
     setError("");
     try {
+      getLiveCallSocket();
       await getLocalMedia(incomingCall.type);
       const result = await emitWithAck<{ call: CallRecord }>(socketEvents.callAccept, { callId: incomingCall.id });
       setActiveCall(result.call);
@@ -270,6 +298,7 @@ export function useWebRtcCalls() {
     if (!incomingCall) return;
     setError("");
     try {
+      getLiveCallSocket();
       await emitWithAck<{ call: CallRecord }>(socketEvents.callReject, { callId: incomingCall.id });
       setIncomingCall(null);
       incomingCallRef.current = null;
@@ -285,6 +314,7 @@ export function useWebRtcCalls() {
     setError("");
     try {
       if (activeCall) {
+        getLiveCallSocket();
         await emitWithAck<{ call: CallRecord }>(socketEvents.callEnd, { callId: activeCall.id });
       }
     } catch (error) {
@@ -348,6 +378,7 @@ export function useWebRtcCalls() {
     incomingCall,
     missedCalls,
     callState,
+    connected,
     error,
     localStream,
     remoteStream,

@@ -40,7 +40,7 @@ import { CallOverlay } from "@/components/calls/call-overlay";
 import { GroupDetailsPanel } from "@/components/groups/group-details-panel";
 import { AccountMenu, AppRail, MobileBottomNavigation } from "@/components/navigation/app-navigation";
 import { useRealtimeMessaging, type RealtimeChat, type RealtimeMessage } from "@/hooks/use-realtime-messaging";
-import { useSoundSystem } from "@/hooks/use-sound-system";
+import { showBrowserNotification, useSoundSystem } from "@/hooks/use-sound-system";
 import { useWebRtcCalls } from "@/hooks/use-webrtc-calls";
 import { cn } from "@/lib/utils";
 
@@ -190,8 +190,8 @@ export function MessengerShell() {
     if (!activeChat?.id || realtime.connected) return;
 
     const timer = window.setInterval(() => {
-      void realtime.loadMessages(activeChat.id);
-      void realtime.refreshChats();
+      void realtime.loadMessages(activeChat.id, { force: true, silent: true });
+      void realtime.refreshChats({ force: true });
     }, 5000);
 
     return () => window.clearInterval(timer);
@@ -216,6 +216,9 @@ export function MessengerShell() {
         kind: "info",
         title: `New message in ${activeChat.name}`,
         description: lastUnread.body ?? "New message"
+      });
+      showBrowserNotification(`PureChat: ${activeChat.name}`, {
+        body: lastUnread.body ?? "New message"
       });
     }
   }, [
@@ -528,7 +531,6 @@ export function MessengerShell() {
             setMobileChatOpen(true);
             setNewChatOpen(false);
             await realtime.loadMessages(chat.id);
-            void realtime.refreshChats();
             toast({ kind: "success", title: "Chat started" });
           }}
         />

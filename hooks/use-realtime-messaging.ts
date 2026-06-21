@@ -83,6 +83,13 @@ type CurrentUser = {
 
 export function useRealtimeMessaging() {
   const socketRef = useRef<Socket | null>(null);
+  const chatsRef = useRef<RealtimeChat[]>([]);
+  const activeChatIdsRef = useRef<string[]>([]);
+  const messagesByChatRef = useRef<Record<string, RealtimeMessage[]>>({});
+  const messageLoadedAtRef = useRef<Record<string, number>>({});
+  const messagesLoadingRef = useRef<Set<string>>(new Set());
+  const refreshChatsPromiseRef = useRef<Promise<RealtimeChat[]> | null>(null);
+  const refreshChatsLoadedAtRef = useRef(0);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [chats, setChats] = useState<RealtimeChat[]>([]);
   const [messagesByChat, setMessagesByChat] = useState<Record<string, RealtimeMessage[]>>({});
@@ -96,18 +103,50 @@ export function useRealtimeMessaging() {
 
   const activeChatIds = useMemo(() => chats.map((chat) => chat.id), [chats]);
 
-  const refreshChats = useCallback(async () => {
-    const chatsResponse = await fetch("/api/chats");
-    const chatsData = await chatsResponse.json();
-    if (!chatsResponse.ok) {
-      throw new Error(chatsData.error ?? "Could not load chats.");
+  useEffect(() => {
+    chatsRef.current = chats;
+    activeChatIdsRef.current = activeChatIds;
+  }, [activeChatIds, chats]);
+
+  useEffect(() => {
+    messagesByChatRef.current = messagesByChat;
+  }, [messagesByChat]);
+
+  const refreshChats = useCallback(async (options?: { force?: boolean }) => {
+    const now = Date.now();
+    if (!options?.force && chatsRef.current.length > 0 && now - refreshChatsLoadedAtRef.current < 4000) {
+      return chatsRef.current;
     }
-    setChats(chatsData.chats);
-    return chatsData.chats as RealtimeChat[];
+    if (refreshChatsPromiseRef.current) return refreshChatsPromiseRef.current;
+
+    refreshChatsPromiseRef.current = (async () => {
+      const chatsResponse = await fetch("/api/chats");
+      const chatsData = await chatsResponse.json();
+      if (!chatsResponse.ok) {
+        throw new Error(chatsData.error ?? "Could not load chats.");
+      }
+      setChats(chatsData.chats);
+      refreshChatsLoadedAtRef.current = Date.now();
+      return chatsData.chats as RealtimeChat[];
+    })();
+
+    try {
+      return await refreshChatsPromiseRef.current;
+    } finally {
+      refreshChatsPromiseRef.current = null;
+    }
   }, []);
 
-  const loadMessages = useCallback(async (chatId: string) => {
-    setLoadingMessagesByChat((current) => ({ ...current, [chatId]: true }));
+  const loadMessages = useCallback(async (chatId: string, options?: { force?: boolean; silent?: boolean }) => {
+    const cached = messagesByChatRef.current[chatId];
+    const loadedAt = messageLoadedAtRef.current[chatId] ?? 0;
+    if (!options?.force && cached && Date.now() - loadedAt < 10000) return cached;
+    if (messagesLoadingRef.current.has(chatId)) return cached ?? [];
+
+    messagesLoadingRef.current.add(chatId);
+    if (!options?.silent && !cached) {
+      setLoadingMessagesByChat((current) => ({ ...current, [chatId]: true }));
+    }
     setMessageErrorsByChat((current) => ({ ...current, [chatId]: "" }));
 
     try {
@@ -120,13 +159,19 @@ export function useRealtimeMessaging() {
         ...current,
         [chatId]: data.messages
       }));
+      messageLoadedAtRef.current[chatId] = Date.now();
+      return data.messages as RealtimeMessage[];
     } catch (error) {
       setMessageErrorsByChat((current) => ({
         ...current,
         [chatId]: error instanceof Error ? error.message : "Could not load messages."
       }));
+      return cached ?? [];
     } finally {
-      setLoadingMessagesByChat((current) => ({ ...current, [chatId]: false }));
+      messagesLoadingRef.current.delete(chatId);
+      if (!options?.silent && !cached) {
+        setLoadingMessagesByChat((current) => ({ ...current, [chatId]: false }));
+      }
     }
   }, []);
 
@@ -148,11 +193,7 @@ export function useRealtimeMessaging() {
         setCurrentUser(meData.user);
 
         if (cancelled) return;
-        const nextChats = await refreshChats();
-
-        await Promise.all(
-          nextChats.slice(0, 5).map((chat: RealtimeChat) => loadMessages(chat.id))
-        );
+        await refreshChats({ force: true });
       } catch (error) {
         if (!cancelled) {
           setError(error instanceof Error ? error.message : "Could not load chats.");
@@ -169,7 +210,7 @@ export function useRealtimeMessaging() {
     return () => {
       cancelled = true;
     };
-  }, [loadMessages, refreshChats]);
+  }, [refreshChats]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -188,12 +229,13 @@ export function useRealtimeMessaging() {
 
     socket.on("connect", () => {
       setConnected(true);
-      activeChatIds.forEach((chatId) => {
+      activeChatIdsRef.current.forEach((chatId) => {
         socket.emit(socketEvents.conversationJoin, { chatId });
       });
     });
 
     socket.on("disconnect", () => setConnected(false));
+    socket.on("connect_error", () => setConnected(false));
 
     socket.on(socketEvents.messageNew, ({ message }) => {
       appendMessage(message);
@@ -253,7 +295,15 @@ export function useRealtimeMessaging() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [activeChatIds, currentUser]);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket?.connected) return;
+    activeChatIds.forEach((chatId) => {
+      socket.emit(socketEvents.conversationJoin, { chatId });
+    });
+  }, [activeChatIds]);
 
   function appendMessage(message: RealtimeMessage) {
     setMessagesByChat((current) => {
@@ -441,13 +491,11 @@ export function useRealtimeMessaging() {
       }
 
       replaceMessage(message);
-      void refreshChats();
       return message;
     } catch (error) {
       try {
         const message = await sendViaApi(chatId, trimmed, clientId);
         replaceMessage(message);
-        void refreshChats();
         return message;
       } catch (fallbackError) {
         const message = fallbackError instanceof Error ? fallbackError.message : "Could not send message.";
@@ -455,7 +503,7 @@ export function useRealtimeMessaging() {
         throw fallbackError;
       }
     }
-  }, [emitWithAck, currentUser, sendViaApi, refreshChats]);
+  }, [emitWithAck, currentUser, sendViaApi]);
 
   const retryMessage = useCallback(async (chatId: string, messageId: string) => {
     const message = messagesByChat[chatId]?.find((item) => item.id === messageId);
@@ -465,13 +513,30 @@ export function useRealtimeMessaging() {
   }, [messagesByChat, sendMessage]);
 
   const markRead = useCallback((chatId: string, messageId: string) => {
-    socketRef.current?.emit(socketEvents.messageRead, { chatId, messageId });
+    if (currentUser) {
+      const readAt = new Date().toISOString();
+      updateReceipt(chatId, messageId, currentUser.id, { readAt, deliveredAt: readAt });
+    }
+
+    const socket = socketRef.current;
+    if (socket?.connected) {
+      socket.emit(socketEvents.messageRead, { chatId, messageId });
+    } else {
+      void fetch(`/api/messages/${messageId}/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId })
+      }).catch(() => {
+        // The next active-chat poll will retry the visible read state.
+      });
+    }
+
     setChats((current) =>
       current.map((chat) =>
         chat.id === chatId ? { ...chat, unreadCount: 0 } : chat
       )
     );
-  }, []);
+  }, [currentUser]);
 
   const startTyping = useCallback((chatId: string) => {
     socketRef.current?.emit(socketEvents.typingStart, { chatId });

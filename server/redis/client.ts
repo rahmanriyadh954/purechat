@@ -44,8 +44,8 @@ function getRedis() {
   }
 
   const client = new Redis(env.REDIS_URL, {
-    connectTimeout: 400,
-    commandTimeout: 400,
+    connectTimeout: 200,
+    commandTimeout: 200,
     enableOfflineQueue: false,
     enableReadyCheck: false,
     lazyConnect: true,
@@ -58,9 +58,7 @@ function getRedis() {
     warnFallback(`Redis unavailable: ${error.message}`);
   });
 
-  if (process.env.NODE_ENV !== "production") {
-    globalForRedis.redis = client;
-  }
+  globalForRedis.redis = client;
 
   return client;
 }
