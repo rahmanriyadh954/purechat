@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 
 type ReportItem = {
   id: string;
@@ -35,57 +36,104 @@ type DuplicateReviewItem = {
 };
 
 export function ModerationDashboard() {
+  const { toast } = useToast();
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [duplicateReviews, setDuplicateReviews] = useState<DuplicateReviewItem[]>([]);
   const [reason, setReason] = useState("Unsafe behavior");
+  const [loading, setLoading] = useState(true);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   async function loadReports() {
-    const response = await fetch("/api/admin/reports");
-    if (!response.ok) return;
-    const data = await response.json();
-    setReports(data.reports);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/reports");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not load reports."));
+      setReports(data.reports ?? []);
 
-    const duplicateResponse = await fetch("/api/admin/duplicate-reviews");
-    if (duplicateResponse.ok) {
-      const duplicateData = await duplicateResponse.json();
-      setDuplicateReviews(duplicateData.reviews);
+      const duplicateResponse = await fetch("/api/admin/duplicate-reviews");
+      if (duplicateResponse.ok) {
+        const duplicateData = await duplicateResponse.json();
+        setDuplicateReviews(duplicateData.reviews ?? []);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not load reports.";
+      setError(message);
+      toast({ kind: "error", title: "Moderation failed to load", description: message });
+    } finally {
+      setLoading(false);
     }
   }
 
   async function review(reportId: string, status: "RESOLVED" | "REJECTED") {
-    await fetch(`/api/admin/reports/${reportId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status, resolutionNote: reason })
+    await runAdminAction(`${status}:${reportId}`, async () => {
+      const response = await fetch(`/api/admin/reports/${reportId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, resolutionNote: reason })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not update report."));
+      await loadReports();
+      toast({ kind: "success", title: status === "RESOLVED" ? "Report resolved" : "Report rejected" });
     });
-    await loadReports();
   }
 
   async function warn(userId: string) {
-    await fetch("/api/admin/warnings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, reason })
+    await runAdminAction(`warn:${userId}`, async () => {
+      const response = await fetch("/api/admin/warnings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, reason })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not send warning."));
+      toast({ kind: "success", title: "Warning sent" });
     });
   }
 
   async function suspend(userId: string) {
-    const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    await fetch("/api/admin/users/suspend", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, reason, suspendedUntil: until })
+    await runAdminAction(`suspend:${userId}`, async () => {
+      const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      const response = await fetch("/api/admin/users/suspend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, reason, suspendedUntil: until })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not suspend user."));
+      await loadReports();
+      toast({ kind: "success", title: "User suspended" });
     });
-    await loadReports();
   }
 
   async function ban(userId: string) {
-    await fetch("/api/admin/users/ban", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, reason })
+    await runAdminAction(`ban:${userId}`, async () => {
+      const response = await fetch("/api/admin/users/ban", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, reason })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not ban user."));
+      await loadReports();
+      toast({ kind: "success", title: "User banned" });
     });
-    await loadReports();
+  }
+
+  async function runAdminAction(key: string, action: () => Promise<void>) {
+    setBusyAction(key);
+    setError("");
+    try {
+      await action();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Action failed.";
+      setError(message);
+      toast({ kind: "error", title: "Action failed", description: message });
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   useEffect(() => {
@@ -111,6 +159,11 @@ export function ModerationDashboard() {
       </div>
 
       <div className="space-y-3">
+        {error ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
         {duplicateReviews.length > 0 ? (
           <section className="rounded-lg border bg-card p-4">
             <h2 className="font-semibold">Suspicious account reviews</h2>
@@ -130,7 +183,16 @@ export function ModerationDashboard() {
           </section>
         ) : null}
 
-        {reports.map((report) => (
+        {loading ? (
+          <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
+            Loading moderation queue...
+          </div>
+        ) : reports.length === 0 ? (
+          <div className="rounded-lg border border-dashed bg-card p-8 text-center">
+            <p className="font-medium">No reports waiting</p>
+            <p className="mt-1 text-sm text-muted-foreground">New safety reports will appear here.</p>
+          </div>
+        ) : reports.map((report) => (
           <article className="rounded-lg border bg-card p-4" key={report.id}>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="space-y-2">
@@ -186,22 +248,22 @@ export function ModerationDashboard() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" onClick={() => review(report.id, "RESOLVED")}>
-                  Resolve
+                <Button size="sm" variant="secondary" disabled={Boolean(busyAction)} onClick={() => review(report.id, "RESOLVED")}>
+                  {busyAction === `RESOLVED:${report.id}` ? "Resolving" : "Resolve"}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => review(report.id, "REJECTED")}>
-                  Reject
+                <Button size="sm" variant="ghost" disabled={Boolean(busyAction)} onClick={() => review(report.id, "REJECTED")}>
+                  {busyAction === `REJECTED:${report.id}` ? "Rejecting" : "Reject"}
                 </Button>
                 {report.reportedUser ? (
                   <>
-                    <Button size="sm" variant="ghost" onClick={() => warn(report.reportedUser!.id)}>
-                      Warn
+                    <Button size="sm" variant="ghost" disabled={Boolean(busyAction)} onClick={() => warn(report.reportedUser!.id)}>
+                      {busyAction === `warn:${report.reportedUser.id}` ? "Warning" : "Warn"}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => suspend(report.reportedUser!.id)}>
-                      Suspend
+                    <Button size="sm" variant="ghost" disabled={Boolean(busyAction)} onClick={() => suspend(report.reportedUser!.id)}>
+                      {busyAction === `suspend:${report.reportedUser.id}` ? "Suspending" : "Suspend"}
                     </Button>
-                    <Button size="sm" variant="destructive" onClick={() => ban(report.reportedUser!.id)}>
-                      Ban
+                    <Button size="sm" variant="destructive" disabled={Boolean(busyAction)} onClick={() => ban(report.reportedUser!.id)}>
+                      {busyAction === `ban:${report.reportedUser.id}` ? "Banning" : "Ban"}
                     </Button>
                   </>
                 ) : null}
@@ -212,4 +274,10 @@ export function ModerationDashboard() {
       </div>
     </main>
   );
+}
+
+function cleanError(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  if (value.startsWith("[") || value.startsWith("{")) return fallback;
+  return value;
 }

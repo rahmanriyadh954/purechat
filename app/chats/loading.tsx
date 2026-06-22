@@ -2,7 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export default function ChatsLoading() {
   return (
-    <main className="grid h-screen grid-cols-1 bg-background md:grid-cols-[360px_1fr]">
+    <main className="grid h-[100dvh] grid-cols-1 bg-background md:grid-cols-[360px_1fr]">
       <aside className="hidden border-r bg-card p-4 md:block">
         <Skeleton className="mb-5 h-11 w-full" />
         <div className="space-y-3">

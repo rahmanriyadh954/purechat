@@ -56,7 +56,7 @@ export function AppRail() {
 
 export function MobileBottomNavigation() {
   return (
-    <nav className="fixed inset-x-3 bottom-3 z-40 rounded-2xl border border-white/20 bg-card/95 px-2 py-2 shadow-2xl shadow-black/15 backdrop-blur-2xl md:hidden" aria-label="Primary navigation">
+    <nav className="fixed inset-x-3 bottom-[calc(0.75rem+env(safe-area-inset-bottom))] z-40 rounded-2xl border border-white/20 bg-card/95 px-2 py-2 shadow-2xl shadow-black/15 backdrop-blur-2xl md:hidden" aria-label="Primary navigation">
       <PrimaryNav orientation="mobile" />
     </nav>
   );
@@ -159,7 +159,7 @@ function PrimaryNav({ orientation }: { orientation: "rail" | "mobile" }) {
         const className = cn(
           "transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           orientation === "mobile"
-            ? "flex h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px]"
+            ? "flex h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px]"
             : "size-10 rounded-md",
           active
             ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
@@ -176,7 +176,7 @@ function PrimaryNav({ orientation }: { orientation: "rail" | "mobile" }) {
               onClick={() => comingSoon(item.label)}
             >
               <Icon className="size-5" />
-              {orientation === "mobile" ? <span>{item.label}</span> : null}
+              {orientation === "mobile" ? <span className="max-w-full truncate">{item.label}</span> : null}
             </button>
           );
         }
@@ -190,14 +190,14 @@ function PrimaryNav({ orientation }: { orientation: "rail" | "mobile" }) {
             aria-current={active ? "page" : undefined}
           >
             <Icon className="size-5" />
-            {orientation === "mobile" ? <span>{item.label}</span> : null}
+            {orientation === "mobile" ? <span className="max-w-full truncate">{item.label}</span> : null}
           </Link>
         );
       })}
       {orientation === "mobile" ? (
         <Link
           className={cn(
-            "flex h-12 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "flex h-12 min-w-0 flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             pathname.startsWith("/settings") || pathname.startsWith("/profile")
               ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
               : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -207,7 +207,7 @@ function PrimaryNav({ orientation }: { orientation: "rail" | "mobile" }) {
           aria-current={pathname.startsWith("/settings") || pathname.startsWith("/profile") ? "page" : undefined}
         >
           <Settings className="size-5" />
-          <span>Settings</span>
+          <span className="max-w-full truncate">Settings</span>
         </Link>
       ) : null}
     </div>

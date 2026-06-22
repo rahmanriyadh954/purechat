@@ -103,6 +103,7 @@ export function MessengerShell() {
   const { toast } = useToast();
   const sounds = useSoundSystem();
   const previousCallStateRef = useRef(calls.callState);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const [activeChatId, setActiveChatId] = useState("");
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -185,6 +186,13 @@ export function MessengerShell() {
     if (!activeChat?.id) return;
     void realtime.loadMessages(activeChat.id);
   }, [activeChat?.id, realtime.loadMessages]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      behavior: activeMessages.length > 1 ? "smooth" : "auto",
+      block: "end"
+    });
+  }, [activeChat?.id, activeMessages.length]);
 
   useEffect(() => {
     if (!activeChat?.id || realtime.connected) return;
@@ -282,13 +290,13 @@ export function MessengerShell() {
   }
 
   return (
-    <main className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.16),transparent_32%),radial-gradient(circle_at_bottom_right,hsl(var(--accent)/0.14),transparent_34%),hsl(var(--background))] text-foreground">
-      <div className="flex h-full p-0 md:p-3">
+    <main className="h-[100dvh] overflow-hidden bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.16),transparent_32%),radial-gradient(circle_at_bottom_right,hsl(var(--accent)/0.14),transparent_34%),hsl(var(--background))] text-foreground">
+      <div className="flex h-full min-w-0 overflow-hidden p-0 md:p-3">
         <AppRail />
 
         <section
           className={cn(
-            "flex h-full w-full flex-col border-r border-white/20 bg-card/78 shadow-2xl shadow-black/5 backdrop-blur-2xl md:w-[392px] md:shrink-0 md:rounded-l-2xl md:border",
+            "flex h-full min-w-0 w-full flex-col border-r border-white/20 bg-card/78 pb-[calc(5.25rem+env(safe-area-inset-bottom))] shadow-2xl shadow-black/5 backdrop-blur-2xl md:w-[392px] md:shrink-0 md:rounded-l-2xl md:border md:pb-0",
             mobileChatOpen && "hidden md:flex"
           )}
         >
@@ -350,8 +358,8 @@ export function MessengerShell() {
               />
 
               <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[linear-gradient(135deg,hsl(var(--muted)/0.54),hsl(var(--background)/0.32)),radial-gradient(circle_at_20%_20%,hsl(var(--primary)/0.09),transparent_25%),radial-gradient(circle_at_80%_0%,hsl(var(--accent)/0.1),transparent_28%)]">
-                <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4 [scrollbar-width:thin] sm:px-6 sm:py-6 lg:px-8">
-                  <div className="mx-auto flex max-w-4xl flex-col gap-4 pb-2">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 [scrollbar-width:thin] sm:px-6 sm:py-6 lg:px-8">
+                  <div className="mx-auto flex max-w-4xl flex-col gap-4 pb-3">
                     {activeMessagesLoading ? (
                       <MessageSkeleton />
                     ) : activeMessagesError ? (
@@ -441,6 +449,7 @@ export function MessengerShell() {
                         <TypingIndicator chat={activeChat} />
                       </>
                     )}
+                    <div ref={messagesEndRef} aria-hidden="true" />
                   </div>
                 </div>
                 {groupDetailsOpen ? (
@@ -1453,10 +1462,10 @@ function ChatHeader({
   const anonymousRestricted = Boolean(chat.anonymous && chat.anonymous.status !== "REVEALED");
 
   return (
-    <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-white/20 bg-card/78 px-3 shadow-sm backdrop-blur-2xl sm:px-5">
-      <div className="flex min-w-0 items-center gap-3">
+    <header className="z-10 flex min-h-[68px] shrink-0 items-center justify-between gap-2 border-b border-white/20 bg-card/86 px-2 py-2 shadow-sm backdrop-blur-2xl sm:h-[72px] sm:px-5">
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
         <Button
-          className="md:hidden"
+          className="size-11 shrink-0 md:hidden"
           variant="ghost"
           size="icon"
           aria-label="Back to chats"
@@ -1464,12 +1473,12 @@ function ChatHeader({
         >
           <ArrowLeft className="size-5" />
         </Button>
-        <Avatar initials={chat.initials} accent={chat.accent} online={chat.online} />
+        <Avatar initials={chat.initials} accent={chat.accent} online={chat.online} compact />
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <h2 className="truncate font-semibold tracking-tight">{chat.name}</h2>
             {anonymousRestricted ? (
-              <span className="shrink-0 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+              <span className="hidden shrink-0 rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary min-[380px]:inline-flex">
                 Anonymous Safe Chat
               </span>
             ) : null}
@@ -1491,9 +1500,10 @@ function ChatHeader({
         </div>
       </div>
 
-      <div className="flex items-center gap-1 rounded-2xl border border-white/20 bg-background/46 p-1 shadow-inner shadow-black/5">
+      <div className="flex shrink-0 items-center gap-0.5 rounded-2xl border border-white/20 bg-background/46 p-1 shadow-inner shadow-black/5 sm:gap-1">
         <span title={anonymousRestricted ? "Calls are disabled in anonymous mode for safety." : undefined}>
           <Button
+            className="size-10 sm:size-11"
             variant="ghost"
             size="icon"
             aria-label="Start audio call"
@@ -1505,6 +1515,7 @@ function ChatHeader({
         </span>
         <span title={anonymousRestricted ? "Calls are disabled in anonymous mode for safety." : undefined}>
           <Button
+            className="size-10 sm:size-11"
             variant="ghost"
             size="icon"
             aria-label="Start video call"
@@ -1514,12 +1525,13 @@ function ChatHeader({
             <Video className="size-5" />
           </Button>
         </span>
-        <Button className="gap-2 px-3" variant="secondary" aria-label="Open Safe Mode" onClick={onSafeInfo}>
+        <Button className="size-10 gap-2 px-0 sm:size-11 sm:px-3" variant="secondary" aria-label="Open Safe Mode" onClick={onSafeInfo}>
           <ShieldCheck className="size-4" />
           <span className="hidden sm:inline">{formatSafetyStatus(chat.safetyStatus)}</span>
         </Button>
         <span title={anonymousRestricted ? "Media sharing is disabled in anonymous mode for safety." : undefined}>
           <Button
+            className="hidden size-10 sm:inline-flex sm:size-11"
             variant="ghost"
             size="icon"
             aria-label="Open media gallery"
@@ -1531,6 +1543,7 @@ function ChatHeader({
         </span>
         <span title={anonymousRestricted ? "Profile viewing is disabled in anonymous mode for safety." : undefined}>
           <Button
+            className="size-10 sm:size-11"
             variant="ghost"
             size="icon"
             aria-label="Group details"
@@ -1548,17 +1561,19 @@ function ChatHeader({
 function Avatar({
   initials,
   accent,
-  online
+  online,
+  compact = false
 }: {
   initials: string;
   accent: string;
   online: boolean;
+  compact?: boolean;
 }) {
   return (
-    <div className="relative size-12 shrink-0">
+    <div className={cn("relative shrink-0", compact ? "size-10 sm:size-12" : "size-12")}>
       <div
         className={cn(
-          "flex size-12 items-center justify-center rounded-2xl text-sm font-semibold text-white shadow-lg shadow-black/10 ring-1 ring-white/25",
+          "flex size-full items-center justify-center rounded-2xl text-sm font-semibold text-white shadow-lg shadow-black/10 ring-1 ring-white/25",
           accent
         )}
       >
@@ -2250,9 +2265,9 @@ function Composer({
   }
 
   return (
-    <footer className="shrink-0 border-t border-white/20 bg-card/78 px-3 py-3 shadow-[0_-12px_40px_rgba(0,0,0,0.06)] backdrop-blur-2xl sm:px-5">
+    <footer className="z-20 shrink-0 border-t border-white/20 bg-card/86 px-2 pb-[calc(0.6rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_40px_rgba(0,0,0,0.08)] backdrop-blur-2xl sm:px-5 sm:py-3">
       <div className="mx-auto flex max-w-4xl flex-col gap-2 sm:flex-row sm:items-end">
-        <div className="flex items-center gap-1 overflow-x-auto rounded-2xl border border-white/20 bg-background/48 p-1 shadow-inner shadow-black/5">
+        <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-2xl border border-white/20 bg-background/48 p-1 shadow-inner shadow-black/5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <input
             id="chat-file-input"
             className="hidden"
@@ -2281,21 +2296,21 @@ function Composer({
               event.currentTarget.value = "";
             }}
           />
-          <Button asChild variant="ghost" size="icon" aria-label="Attach image" title={textOnly ? "Media sharing is disabled in anonymous mode for safety." : "Attach image"}>
+          <Button asChild className="size-11 shrink-0" variant="ghost" size="icon" aria-label="Attach image" title={textOnly ? "Media sharing is disabled in anonymous mode for safety." : "Attach image"}>
             <label htmlFor="chat-file-input">
-            <Paperclip className="size-5" />
+              <Paperclip className="size-5" />
             </label>
           </Button>
-          <Button variant="ghost" size="icon" aria-label="Add emoji" onClick={() => setPanel(panel === "emoji" ? null : "emoji")}>
+          <Button className="size-11 shrink-0" variant="ghost" size="icon" aria-label="Add emoji" onClick={() => setPanel(panel === "emoji" ? null : "emoji")}>
             <Smile className="size-5" />
           </Button>
           <span title={textOnly ? "GIFs are disabled in anonymous mode for safety." : undefined}>
-            <Button variant="ghost" size="icon" aria-label="Send GIF" onClick={() => textOnly ? blockedInAnonymous("GIFs") : setPanel(panel === "gif" ? null : "gif")}>
+            <Button className="size-11 shrink-0" variant="ghost" size="icon" aria-label="Send GIF" onClick={() => textOnly ? blockedInAnonymous("GIFs") : setPanel(panel === "gif" ? null : "gif")}>
               <Gift className="size-5" />
             </Button>
           </span>
           <span title={textOnly ? "Stickers are disabled in anonymous mode for safety." : undefined}>
-            <Button variant="ghost" size="icon" aria-label="Send sticker" onClick={() => textOnly ? blockedInAnonymous("Stickers") : setPanel(panel === "sticker" ? null : "sticker")}>
+            <Button className="size-11 shrink-0" variant="ghost" size="icon" aria-label="Send sticker" onClick={() => textOnly ? blockedInAnonymous("Stickers") : setPanel(panel === "sticker" ? null : "sticker")}>
               <Sticker className="size-5" />
             </Button>
           </span>
@@ -2365,35 +2380,35 @@ function Composer({
             />
           ) : null}
           <div className="flex min-w-0 items-end gap-2">
-          <div className="flex min-h-12 flex-1 items-center rounded-2xl border border-white/30 bg-background/78 px-4 shadow-inner shadow-black/5 backdrop-blur focus-within:ring-2 focus-within:ring-ring">
-            <textarea
-              className="max-h-32 min-h-6 w-full resize-none bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
-              placeholder={`Message ${chatName}`}
-              rows={1}
-              value={body}
-              onBlur={onTypingStop}
-              onChange={(event) => {
-                setBody(event.target.value);
-                if (event.target.value.trim()) onTypingStart();
-                else onTypingStop();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void submit();
-                }
-              }}
-            />
-          </div>
+            <div className="flex min-h-12 flex-1 items-center rounded-2xl border border-white/30 bg-background/78 px-3 shadow-inner shadow-black/5 backdrop-blur focus-within:ring-2 focus-within:ring-ring sm:px-4">
+              <textarea
+                className="max-h-32 min-h-6 w-full resize-none bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                placeholder={`Message ${chatName}`}
+                rows={1}
+                value={body}
+                onBlur={onTypingStop}
+                onChange={(event) => {
+                  setBody(event.target.value);
+                  if (event.target.value.trim()) onTypingStart();
+                  else onTypingStop();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+            </div>
 
-          <Button className="rounded-2xl" variant="ghost" size="icon" aria-label="Record voice message" title={textOnly ? "Voice messages are disabled in anonymous mode for safety." : "Voice messages are coming soon"}>
-            <label htmlFor="chat-voice-input">
-              <Mic className="size-5" />
-            </label>
-          </Button>
-          <Button className="rounded-2xl shadow-lg shadow-primary/20" size="icon" aria-label={uploading || sending ? "Sending" : "Send message"} disabled={uploading || sending} onClick={() => void submit()}>
-            {uploading || sending ? <Loader2 className="size-5 animate-spin" /> : <SendHorizontal className="size-5" />}
-          </Button>
+            <Button className="size-11 shrink-0 rounded-2xl" variant="ghost" size="icon" aria-label="Record voice message" title={textOnly ? "Voice messages are disabled in anonymous mode for safety." : "Voice messages are coming soon"}>
+              <label htmlFor="chat-voice-input">
+                <Mic className="size-5" />
+              </label>
+            </Button>
+            <Button className="size-11 shrink-0 rounded-2xl shadow-lg shadow-primary/20" size="icon" aria-label={uploading || sending ? "Sending" : "Send message"} disabled={uploading || sending} onClick={() => void submit()}>
+              {uploading || sending ? <Loader2 className="size-5 animate-spin" /> : <SendHorizontal className="size-5" />}
+            </Button>
           </div>
         </div>
       </div>
@@ -2492,7 +2507,20 @@ async function updateAnonymousRequest(
 }
 
 function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Please try again.";
+  if (!(error instanceof Error)) return "Please try again.";
+  if (looksTechnicalError(error.message)) return "Please check the details and try again.";
+  return error.message;
+}
+
+function looksTechnicalError(message: string) {
+  const value = message.trim();
+  return (
+    value.startsWith("[") ||
+    value.startsWith("{") ||
+    value.includes("invalid_type") ||
+    value.includes("invalid_string") ||
+    value.includes("ZodError")
+  );
 }
 
 function detectAttachmentKind(file: File) {
@@ -2612,12 +2640,14 @@ function EmojiPanel({ onPick }: { onPick: (emoji: string) => void }) {
   ];
 
   return (
-    <div className="flex flex-wrap gap-2 rounded-2xl border border-white/30 bg-background/78 p-2 shadow-lg shadow-black/5 backdrop-blur">
+    <div className="max-h-[34dvh] overflow-y-auto overscroll-contain rounded-2xl border border-white/30 bg-background/90 p-2 shadow-lg shadow-black/5 backdrop-blur">
+      <div className="flex flex-wrap gap-2">
       {emojis.map((emoji) => (
-        <button className="rounded-xl px-2 py-1 text-lg transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" key={emoji} onClick={() => onPick(emoji)} type="button">
+        <button className="min-h-10 min-w-10 rounded-xl px-2 py-1 text-lg transition hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" key={emoji} onClick={() => onPick(emoji)} type="button">
           {emoji}
         </button>
       ))}
+      </div>
     </div>
   );
 }
@@ -2656,7 +2686,7 @@ function GifPanel({
   }, [query]);
 
   return (
-    <div className="space-y-2 rounded-2xl border border-white/30 bg-background/78 p-2 shadow-lg shadow-black/5 backdrop-blur">
+    <div className="max-h-[42dvh] space-y-2 overflow-y-auto overscroll-contain rounded-2xl border border-white/30 bg-background/90 p-2 shadow-lg shadow-black/5 backdrop-blur">
       <input
         className="h-10 w-full rounded-xl border border-white/30 bg-background/80 px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
         placeholder="Search GIFs"
@@ -2723,7 +2753,7 @@ function StickerPanel({
   }, []);
 
   return (
-    <div className="flex gap-2 overflow-x-auto rounded-2xl border border-white/30 bg-background/78 p-2 shadow-lg shadow-black/5 backdrop-blur">
+    <div className="flex max-h-[30dvh] gap-2 overflow-x-auto overscroll-contain rounded-2xl border border-white/30 bg-background/90 p-2 shadow-lg shadow-black/5 backdrop-blur [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {loading ? (
         Array.from({ length: 4 }).map((_, index) => (
           <Skeleton className="size-16 rounded-xl" key={index} />

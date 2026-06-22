@@ -89,7 +89,7 @@ export function SecurityPanel() {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      setError(data.error ?? "Could not sign out from all devices.");
+      setError(cleanError(data.error, "Could not sign out from all devices."));
       setLoggingOutAll(false);
       return;
     }
@@ -122,7 +122,7 @@ export function SecurityPanel() {
     const data = await response.json();
 
     if (!response.ok) {
-      setError(data.error ?? "Could not update two-step verification.");
+      setError(cleanError(data.error, "Could not update two-step verification."));
       return;
     }
 
@@ -144,7 +144,7 @@ export function SecurityPanel() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error ?? "Could not update password.");
+        throw new Error(cleanError(data.error, "Could not update password."));
       }
 
       setPasswordForm({ currentPassword: "", newPassword: "" });
@@ -176,7 +176,7 @@ export function SecurityPanel() {
     const data = await response.json();
 
     if (!response.ok) {
-      setError(data.error ?? "Could not update family mode.");
+      setError(cleanError(data.error, "Could not update family mode."));
       return;
     }
 
@@ -385,4 +385,10 @@ function SoundToggle({
       </span>
     </button>
   );
+}
+
+function cleanError(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  if (value.trim().startsWith("[") || value.trim().startsWith("{")) return fallback;
+  return value;
 }

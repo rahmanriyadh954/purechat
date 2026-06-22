@@ -106,6 +106,38 @@ npm run db:deploy # Production migration deploy
 - Encrypted report evidence.
 - Privacy-first moderation defaults.
 
+## Current Product Status
+
+PureChat is wired as a real messaging product rather than a static demo:
+
+- Auth, registration, OTP verification, logout, sessions, and settings are database-backed.
+- Chat list, direct chat creation, anonymous safe requests, message sending, reactions, edits, deletes, reports, read receipts, and fallback polling are active.
+- Rich message controls either work now or show a clear Coming Soon toast.
+- Calls show history and use live WebRTC/Socket.IO where available; anonymous chats disable calls for safety.
+- Admin moderation can review reports, warn users, suspend users, ban users, and review suspicious duplicate-account attempts.
+- Redis is optional in development; memory fallback keeps login, OTP, sessions, and rate limits working.
+
+Known production notes:
+
+- Vercel serverless deployments should not be the only Socket.IO host. Use the REST and polling fallback for messaging, and run Socket.IO on a persistent Node host for instant delivery.
+- WebRTC production calls need a TURN server for strict networks.
+- Local GIF data and local moderation rules are intentionally free for localhost. Add external providers only when production keys are ready.
+
+## Final UI Audit Checklist
+
+- Click every visible button on desktop and mobile.
+- Confirm every action either works, is hidden, or shows a clear Coming Soon toast.
+- Confirm wrong credentials, validation failures, upload failures, and moderation failures never show raw JSON.
+- Confirm all toasts are dismissible and swipe-removable.
+- Confirm mobile chat input stays above the browser safe area.
+- Confirm chat list and chat window switch cleanly on mobile.
+- Confirm message send, retry, edit, delete, report, reaction, emoji, GIF, sticker, and image upload paths.
+- Confirm anonymous chats hide identity and disable calls/media as designed.
+- Confirm Calls page has history and a back button.
+- Confirm Settings, Profile, Security, and Admin dashboards have loading, empty, success, and error states.
+- Confirm dark mode and light mode are readable.
+- Confirm keyboard navigation reaches menus, modals, buttons, and form fields.
+
 ## Main Folders
 
 - `app`: App Router pages and API routes.

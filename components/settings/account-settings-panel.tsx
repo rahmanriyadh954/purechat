@@ -104,7 +104,7 @@ export function AccountSettingsPanel() {
       const response = await fetch("/api/users/me");
       const data = await response.json();
 
-      if (!response.ok) throw new Error(data.error ?? "Could not load profile.");
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not load profile."));
 
       applyUser(data.user);
     } catch (error) {
@@ -162,7 +162,7 @@ export function AccountSettingsPanel() {
       });
       const data = await response.json();
 
-      if (!response.ok) throw new Error(data.error ?? "Could not save profile.");
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not save profile."));
 
       applyUser(data.user);
       toast({ kind: "success", title: "Profile saved" });
@@ -188,7 +188,7 @@ export function AccountSettingsPanel() {
       });
       const data = await response.json();
 
-      if (!response.ok) throw new Error(data.error ?? "Could not save privacy settings.");
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not save privacy settings."));
 
       toast({ kind: "success", title: "Privacy updated" });
     } catch (error) {
@@ -213,7 +213,7 @@ export function AccountSettingsPanel() {
       });
       const data = await response.json();
 
-      if (!response.ok) throw new Error(data.error ?? "Could not update password.");
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not update password."));
 
       setPasswordForm({ currentPassword: "", newPassword: "" });
       toast({ kind: "success", title: "Password updated" });
@@ -236,7 +236,7 @@ export function AccountSettingsPanel() {
       });
       const data = await response.json();
 
-      if (!response.ok) throw new Error(data.error ?? "Could not update two-step verification.");
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not update two-step verification."));
 
       await loadMe();
       toast({ kind: "success", title: data.message ?? "Two-step verification updated" });
@@ -444,6 +444,12 @@ function formatNotificationPermission(permission: string) {
   if (permission === "denied") return "Blocked";
   if (permission === "unsupported") return "Not supported";
   return "Not requested";
+}
+
+function cleanError(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  if (value.trim().startsWith("[") || value.trim().startsWith("{")) return fallback;
+  return value;
 }
 
 const visibilityOptions = [

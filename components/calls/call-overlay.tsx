@@ -55,7 +55,7 @@ export function CallOverlay({
 
   if (incomingCall) {
     return (
-      <div className="fixed bottom-5 right-5 z-50 w-[min(92vw,380px)] rounded-lg border bg-card p-4 shadow-xl">
+      <div className="fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 mx-auto w-[min(92vw,380px)] rounded-2xl border border-white/20 bg-card/95 p-4 shadow-2xl shadow-black/15 backdrop-blur-2xl sm:left-auto sm:right-5 sm:mx-0">
         <p className="text-sm text-muted-foreground">Incoming call</p>
         <h2 className="mt-1 text-lg font-semibold">
           {incomingCall.startedBy?.displayName ?? "Someone"} is calling
@@ -85,7 +85,7 @@ export function CallOverlay({
   if (!activeCall) return null;
 
   return (
-    <div className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-4xl rounded-lg border bg-card p-3 shadow-xl">
+    <div className="fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-50 mx-auto max-w-4xl rounded-2xl border border-white/20 bg-card/95 p-3 shadow-2xl shadow-black/15 backdrop-blur-2xl">
       <div className="grid gap-3 md:grid-cols-[1fr_220px]">
         <VideoPane stream={remoteStream} label="Remote" muted={false} />
         <VideoPane stream={localStream} label="You" muted />

@@ -3,6 +3,7 @@
 import type React from "react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 
 type GroupDetails = {
   id: string;
@@ -42,58 +43,86 @@ type PermissionKey =
   | "approvalRequired";
 
 export function GroupDetailsPanel({ chatId }: { chatId: string }) {
+  const { toast } = useToast();
   const [group, setGroup] = useState<GroupDetails | null>(null);
   const [media, setMedia] = useState<Array<{ id: string; fileName: string; fileType: string }>>([]);
   const [inviteUrl, setInviteUrl] = useState("");
   const [announcementTitle, setAnnouncementTitle] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   async function load() {
-    const [groupResponse, mediaResponse] = await Promise.all([
-      fetch(`/api/groups/${chatId}`),
-      fetch(`/api/groups/${chatId}/media`)
-    ]);
+    setError("");
+    try {
+      const [groupResponse, mediaResponse] = await Promise.all([
+        fetch(`/api/groups/${chatId}`),
+        fetch(`/api/groups/${chatId}/media`)
+      ]);
 
-    if (groupResponse.ok) {
-      const data = await groupResponse.json();
-      setGroup(data.group);
-    }
+      const groupData = await groupResponse.json().catch(() => ({}));
+      if (!groupResponse.ok) throw new Error(cleanError(groupData.error, "Could not load group details."));
+      setGroup(groupData.group);
 
-    if (mediaResponse.ok) {
-      const data = await mediaResponse.json();
-      setMedia(data.media);
+      if (mediaResponse.ok) {
+        const data = await mediaResponse.json();
+        setMedia(data.media ?? []);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not load group details.";
+      setError(message);
+      toast({ kind: "error", title: "Group details failed", description: message });
+    } finally {
+      setLoading(false);
     }
   }
 
   async function createInvite() {
-    const response = await fetch(`/api/groups/${chatId}/invites`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
+    await runAction("invite", async () => {
+      const response = await fetch(`/api/groups/${chatId}/invites`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not create invite link."));
+      setInviteUrl(data.inviteUrl);
+      toast({ kind: "success", title: "Invite link created" });
     });
-    const data = await response.json();
-    if (response.ok) setInviteUrl(data.inviteUrl);
   }
 
   async function pinAnnouncement() {
-    const response = await fetch(`/api/groups/${chatId}/announcements`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: announcementTitle })
-    });
+    if (!announcementTitle.trim()) {
+      toast({ kind: "info", title: "Add a title first" });
+      return;
+    }
+    await runAction("announcement", async () => {
+      const response = await fetch(`/api/groups/${chatId}/announcements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: announcementTitle.trim() })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not pin announcement."));
 
-    if (response.ok) {
       setAnnouncementTitle("");
       await load();
-    }
+      toast({ kind: "success", title: "Announcement pinned" });
+    });
   }
 
   async function setRole(userId: string, role: "ADMIN" | "MEMBER") {
-    await fetch(`/api/groups/${chatId}/members/${userId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role })
+    await runAction(`role:${userId}`, async () => {
+      const response = await fetch(`/api/groups/${chatId}/members/${userId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not update member role."));
+      await load();
+      toast({ kind: "success", title: "Member role updated" });
     });
-    await load();
   }
 
   async function updatePermission(key: PermissionKey, value: boolean) {
@@ -110,38 +139,84 @@ export function GroupDetailsPanel({ chatId }: { chatId: string }) {
       [key]: value
     };
 
-    const response = await fetch(`/api/groups/${chatId}/permissions`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(next)
+    await runAction(`permission:${key}`, async () => {
+      const response = await fetch(`/api/groups/${chatId}/permissions`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not update permission."));
+      await load();
+      toast({ kind: "success", title: "Permission updated" });
     });
-
-    if (response.ok) await load();
   }
 
   async function removeMember(userId: string) {
-    await fetch(`/api/groups/${chatId}/members/${userId}`, { method: "DELETE" });
-    await load();
+    await runAction(`remove:${userId}`, async () => {
+      const response = await fetch(`/api/groups/${chatId}/members/${userId}`, { method: "DELETE" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not remove member."));
+      await load();
+      toast({ kind: "success", title: "Member removed" });
+    });
   }
 
   async function reportUser(userId: string) {
-    await fetch("/api/reports", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "USER",
-        chatId,
-        reportedUserId: userId,
-        reason: "Unsafe or unwanted behavior"
-      })
+    await runAction(`report:${userId}`, async () => {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "USER",
+          chatId,
+          reportedUserId: userId,
+          reason: "Unsafe or unwanted behavior"
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(cleanError(data.error, "Could not report member."));
+      toast({ kind: "success", title: "Report sent" });
     });
+  }
+
+  async function runAction(key: string, action: () => Promise<void>) {
+    setBusyAction(key);
+    setError("");
+    try {
+      await action();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Action failed.";
+      setError(message);
+      toast({ kind: "error", title: "Action failed", description: message });
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   useEffect(() => {
     void load();
   }, [chatId]);
 
-  if (!group) return null;
+  if (loading) {
+    return (
+      <aside className="hidden w-96 shrink-0 overflow-y-auto border-l bg-card p-4 xl:block">
+        <div className="rounded-lg border bg-background p-4 text-sm text-muted-foreground">
+          Loading group details...
+        </div>
+      </aside>
+    );
+  }
+
+  if (!group) {
+    return (
+      <aside className="hidden w-96 shrink-0 overflow-y-auto border-l bg-card p-4 xl:block">
+        <div className="rounded-lg border bg-background p-4 text-sm text-muted-foreground">
+          {error || "Group details are unavailable."}
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="hidden w-96 shrink-0 overflow-y-auto border-l bg-card p-4 xl:block">
@@ -158,8 +233,8 @@ export function GroupDetailsPanel({ chatId }: { chatId: string }) {
       </div>
 
       <Section title="Invite link">
-        <Button size="sm" onClick={createInvite}>
-          Create link
+        <Button size="sm" disabled={Boolean(busyAction)} onClick={createInvite}>
+          {busyAction === "invite" ? "Creating" : "Create link"}
         </Button>
         {inviteUrl ? <p className="break-all text-xs text-muted-foreground">{inviteUrl}</p> : null}
       </Section>
@@ -210,8 +285,8 @@ export function GroupDetailsPanel({ chatId }: { chatId: string }) {
             value={announcementTitle}
             onChange={(event) => setAnnouncementTitle(event.target.value)}
           />
-          <Button size="sm" onClick={pinAnnouncement}>
-            Pin
+          <Button size="sm" disabled={Boolean(busyAction)} onClick={pinAnnouncement}>
+            {busyAction === "announcement" ? "Pinning" : "Pin"}
           </Button>
         </div>
         {group.pinnedAnnouncements.map((item) => (
@@ -244,14 +319,14 @@ export function GroupDetailsPanel({ chatId }: { chatId: string }) {
             </div>
             {member.role !== "OWNER" ? (
               <div className="flex gap-1">
-                <Button size="sm" variant="ghost" onClick={() => setRole(member.userId, member.role === "ADMIN" ? "MEMBER" : "ADMIN")}>
-                  {member.role === "ADMIN" ? "Member" : "Admin"}
+                <Button size="sm" variant="ghost" disabled={Boolean(busyAction)} onClick={() => setRole(member.userId, member.role === "ADMIN" ? "MEMBER" : "ADMIN")}>
+                  {busyAction === `role:${member.userId}` ? "Saving" : member.role === "ADMIN" ? "Member" : "Admin"}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => removeMember(member.userId)}>
-                  Remove
+                <Button size="sm" variant="ghost" disabled={Boolean(busyAction)} onClick={() => removeMember(member.userId)}>
+                  {busyAction === `remove:${member.userId}` ? "Removing" : "Remove"}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => reportUser(member.userId)}>
-                  Report
+                <Button size="sm" variant="ghost" disabled={Boolean(busyAction)} onClick={() => reportUser(member.userId)}>
+                  {busyAction === `report:${member.userId}` ? "Reporting" : "Report"}
                 </Button>
               </div>
             ) : null}
@@ -303,4 +378,10 @@ function Permission({
       </button>
     </div>
   );
+}
+
+function cleanError(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  if (value.startsWith("[") || value.startsWith("{")) return fallback;
+  return value;
 }
